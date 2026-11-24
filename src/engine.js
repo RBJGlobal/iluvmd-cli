@@ -312,6 +312,8 @@ const routes = {
       getDocument: (o) => lib.getDocument({
         data: o.data, verbosity: 0, isEvalSupported: false, disableFontFace: true,
         useWorkerFetch: false, useSystemFonts: false, disableAutoFetch: true, disableStream: true, disableRange: true,
+        // Only text is read, so no image in the file is ever decoded.
+        maxImageSize: 0,
       }),
     };
     const scope = { pdfjsLib };

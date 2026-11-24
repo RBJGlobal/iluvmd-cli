@@ -169,6 +169,16 @@ md = readOut('paper.md');
 ok('pdf>md heading and text', /^# Quarterly Report$/m.test(md) && md.includes('Plain appendix text.'), md);
 ok('pdf>md leaves no tag-like "<"', !/<(?=[A-Za-z\/!?])/.test(md), md);
 ok('pdf>md prints nothing on standard output', r.out === '', r.out);
+// Round trip: a PDF this tool wrote reads back with its structure.
+file('trip.md', '# Trip Report\n\nA first paragraph with **bold words** and *slanted words* in one sentence that is long enough to cross the middle of the page.\n\nA second paragraph that must stay apart from the first.\n\n1. Open the terminal.\n2. Run the converter.\n\n| Region | Sales | Change |\n| --- | ---: | :---: |\n| North | 1,200 | +4% |\n| South | 950 | -2% |\n| West | 1,480 | +9% |\n');
+r = run(['trip.md', '--to', 'pdf']);
+ok('round trip: md>pdf exits 0', r.code === 0, r.err);
+r = run(['trip.pdf', '-o', 'trip-back.md']);
+const back = r.code === 0 ? fs.readFileSync(path.join(dir, 'trip-back.md'), 'utf8') : '';
+ok('round trip: sentences stay whole', /with \*\*bold words\*\* and \*slanted\s+words\* in one sentence that is long enough to cross\s+the middle of the page\./.test(back.replace(/\*\n\*/g, ' ')), back);
+ok('round trip: paragraphs stay apart', /page\.\n\nA second paragraph/.test(back), back);
+ok('round trip: list numbers come first', back.includes('1. Open the terminal.\n2. Run the converter.'), back);
+ok('round trip: the table comes back as a table', back.includes('| Region | Sales | Change |') && back.includes('| South | 950 | -2% |'), back);
 file('broken.pdf', 'this is not a PDF');
 r = run(['broken.pdf']);
 ok('pdf>md reports a broken file', r.code === 1 && r.err.length > 0 && !fs.existsSync(path.join(dir, 'broken.md')), r.err);
