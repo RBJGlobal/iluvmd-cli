@@ -6,7 +6,7 @@
   "homepage": "https://iluvmd.com/cli",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RBJGlobal/ilovemd-cli.git"
+    "url": "git+https://github.com/RBJGlobal/iluvmd-cli.git"
   },
   "bin": {
     "iluvmd": "bin/iluvmd.js"
@@ -56,6 +56,6 @@
     "privacy"
   ],
   "bugs": {
-    "url": "https://github.com/RBJGlobal/ilovemd-cli/issues"
+    "url": "https://github.com/RBJGlobal/iluvmd-cli/issues"
   }
 }
