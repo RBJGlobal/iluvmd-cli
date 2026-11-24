@@ -4,13 +4,33 @@
   "description": "Convert documents to Markdown and Markdown to documents, on your own machine. No uploads, no network calls.",
   "license": "MIT",
   "homepage": "https://iluvmd.com",
-  "repository": { "type": "git", "url": "git+https://github.com/RBJGlobal/ilovemd-cli.git" },
-  "bin": { "iluvmd": "bin/iluvmd.js" },
-  "engines": { "node": ">=22" },
-  "files": ["bin/", "src/", "lib/", "vendor/", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RBJGlobal/ilovemd-cli.git"
+  },
+  "bin": {
+    "iluvmd": "bin/iluvmd.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "lib/",
+    "vendor/",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md",
+    "npm-shrinkwrap.json"
+  ],
   "scripts": {
     "test": "node test/run-all.js",
     "sync": "node scripts/sync-from-site.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "dompurify": "3.2.7",
+    "jsdom": "30.1.3",
+    "mammoth": "1.11.0"
+  }
 }

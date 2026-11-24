@@ -23,11 +23,11 @@ Everything runs on this machine. No uploads and no network calls.
 
 Usage:
   iluvmd <file...>                 convert each file to Markdown
-  iluvmd <file.md...> --to <fmt>   convert Markdown to docx or txt
+  iluvmd <file.md...> --to <fmt>   convert Markdown to docx, html or txt
   iluvmd - --from txt              read standard input, write standard output
 
 Options:
-  --to <fmt>       target format: md, docx, txt (default: md)
+  --to <fmt>       target format: md, docx, html, txt (default: md)
   --from <fmt>     input format, needed only for standard input
   -o, --output <path>  output file, or a folder when converting several files;
                        "-" writes to standard output
@@ -150,13 +150,14 @@ async function main(argv) {
       if (!fromKind) { unsupported++; throw new Error('unsupported file type: ' + input); }
       const toKind = o.to || 'md';
       if (fromKind === toKind) throw new UsageError(fromKind === 'md'
-        ? 'Markdown input needs --to (docx or txt)' : 'input and output formats are the same');
+        ? 'Markdown input needs --to (docx, html or txt)' : 'input and output formats are the same');
       const route = fromKind + '>' + toKind;
       if (!routes.includes(route)) { unsupported++; throw new Error('cannot convert ' + fromKind + ' to ' + toKind + ' yet'); }
       if (toStdout && BINARY.has(toKind) && process.stdout.isTTY) throw new UsageError('refusing to write a binary file to the terminal (use --output)');
 
       const data = input === '-' ? await readStdin() : readInput(input);
-      const out = await runConversion(route, data, { timeoutMs: o.timeoutMs });
+      const title = input === '-' ? 'Document' : path.basename(input, path.extname(input));
+      const out = await runConversion(route, data, { timeoutMs: o.timeoutMs, title });
       // Text output always ends with a newline.
       const payload = out.bytes ? out.bytes : (out.text.endsWith('\n') ? out.text : out.text + '\n');
 

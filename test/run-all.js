@@ -72,6 +72,52 @@ ok('control characters stripped on stdout', r.code === 0 && ![0x1b, 0x202e, 0x20
 r = run(['-', '--raw'], 'plain' + cp(0x200b) + 'text here\n');
 ok('--raw keeps them', r.out.includes(cp(0x200b)), JSON.stringify(r.out));
 
+// --- Markdown to HTML -------------------------------------------------------
+file('page.md', ['# Title <script>alert(1)</script>', '', 'Text **bold** [bad](javascript:alert(1)) [ok](https://example.com)', '',
+  '![remote](https://tracker.example/p.png) ![proto](//tracker.example/q.png) ![local](./pic.png)', '',
+  '<img src=x onerror=alert(1)>', '', '<iframe src="https://example.com"></iframe>', '',
+  '| a | b |', '|---|---|', '| 1 | 2 |', ''].join('\n'));
+r = run(['page.md', '--to', 'html']);
+ok('md>html exits 0', r.code === 0, r.err);
+let html = readOut('page.html');
+ok('md>html is a full page with a title', html.startsWith('<!DOCTYPE html>') && html.includes('<title>page</title>'));
+ok('md>html carries the content policy', /http-equiv="Content-Security-Policy" content="default-src 'none'/.test(html));
+ok('md>html renders', html.includes('<strong>bold</strong>') && html.includes('<table>'), html);
+ok('md>html has no script, handler or frame', !/<script|onerror|<iframe|javascript:alert\(1\)"/i.test(html), html);
+ok('md>html has no remote image', !/<img[^>]+src="(https?:)?\/\//i.test(html), html);
+ok('md>html turns a remote image into a link', html.includes('<a href="https://tracker.example/p.png"'), html);
+ok('md>html keeps a local image', html.includes('<img src="./pic.png" alt="local">'), html);
+file('a"b<c>.md', '# x\n');
+r = run(['a"b<c>.md', '--to', 'html']);
+ok('md>html escapes the title', r.code === 0 && readOut('a"b<c>.html').includes('<title>a&quot;b&lt;c&gt;</title>'), r.err);
+
+// --- HTML to Markdown -------------------------------------------------------
+file('in.html', '<h1>Hi</h1><p>Some <b>bold</b> and <a href="https://example.com">link</a><script>steal()</script></p>' +
+  '<ul><li>one</li><li>two</li></ul><a href="javascript:alert(1)">bad</a><style>p{color:red}</style>');
+r = run(['in.html']);
+md = r.code === 0 ? readOut('in.md') : '';
+ok('html>md converts', /^# Hi$/m.test(md) && md.includes('**bold**') && md.includes('[link](https://example.com)') && /^- one$/m.test(md), r.err + md);
+ok('html>md drops script, style and script links', !/steal|color:red|javascript:/.test(md), md);
+file('broken.html', '<div><p>unclosed <b>tags<table><tr><td>cell');
+r = run(['broken.html', '-o', '-']);
+ok('html>md accepts malformed HTML', r.code === 0 && /unclosed/.test(r.out) && /cell/.test(r.out), r.err + r.out);
+
+// --- Word to Markdown -------------------------------------------------------
+fs.copyFileSync(path.join(__dirname, 'fixtures', 'sample.docx'), path.join(dir, 'sample.docx'));
+r = run(['sample.docx']);
+md = r.code === 0 ? readOut('sample.md') : '';
+ok('docx>md converts headings, lists and tables', /^# Quarterly Report$/m.test(md) && /^- First bullet$/m.test(md) && /^\| Name \|/m.test(md), r.err + md);
+file('fake.docx', 'this is not a zip file');
+r = run(['fake.docx']);
+ok('docx>md fails cleanly on a broken file', r.code === 1 && r.err.length > 0 && !fs.existsSync(path.join(dir, 'fake.md')), r.err);
+r = run(['sample.docx', '-o', '-']);
+ok('docx>md prints nothing but Markdown on stdout', r.code === 0 && r.out.startsWith('# Quarterly Report'), r.out.slice(0, 80));
+
+// --- Markdown to text keeps the text of raw HTML ----------------------------
+file('raw.md', 'Before\n\n<div>inside <b>html</b></div>\n\nAfter\n');
+r = run(['raw.md', '--to', 'txt', '-o', '-']);
+ok('md>txt keeps text inside raw HTML', r.code === 0 && /inside html/.test(r.out) && !/<div>/.test(r.out), r.out);
+
 // --- usage and unsupported --------------------------------------------------
 ok('no input is a usage error', run([]).code === 2);
 ok('unknown option is a usage error', run(['--nope']).code === 2);

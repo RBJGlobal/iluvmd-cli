@@ -11,10 +11,12 @@ function runConversion(route, input, opts) {
   const timeoutMs = (opts && opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'worker.js'), {
-      workerData: { route, input, opts: {} },
+      workerData: { route, input, opts: { title: opts && opts.title } },
       resourceLimits: { maxOldGenerationSizeMb: HEAP_MB, maxYoungGenerationSizeMb: 64, stackSizeMb: 8 },
-      stdout: false,
-      stderr: false,
+      // Captured and never forwarded: converter or library output must not
+      // reach this process's standard output.
+      stdout: true,
+      stderr: true,
     });
     let done = false;
     const finish = (fn, value) => {
