@@ -87,6 +87,58 @@ const PAGE_CSS = [
   'table{border-collapse:collapse}th,td{border:1px solid #e1e8ed;padding:6px 12px}img{max-width:100%}',
 ].join('');
 
+// The site checks Markdown that leaves as raw text with a second parser
+// (marked): if that parser would read any HTML out of it, every tag-like "<"
+// and image opener is encoded. The same two files run here; the "worker" is
+// a plain object, since each conversion already runs in its own thread.
+let guardCache = null;
+function rawOutputGuard() {
+  if (guardCache) return guardCache;
+  const marked = loadUmd('vendor/marked-15.0.12.umd.js', 'marked');
+  const oracle = loadCjs('lib/site/raw-output-guard-worker.js');
+  const createWorker = () => {
+    const w = {
+      onmessage: null,
+      terminate() { w.onmessage = null; },
+      postMessage(msg) {
+        let ok = false;
+        try { ok = oracle.seesNoHtml(marked, msg.text) === true; } catch (e) { ok = false; }
+        queueMicrotask(() => { if (w.onmessage) w.onmessage({ data: { id: msg.id, clean: ok } }); });
+      },
+    };
+    return w;
+  };
+  guardCache = loadCjs('lib/site/raw-output-guard.js').create({ createWorker });
+  return guardCache;
+}
+
+// The PDF library is a browser bundle. It gets its own small set of browser
+// names and nothing else; it attaches itself to that object.
+let pdfCache = null;
+function pdfMake() {
+  if (pdfCache) return pdfCache;
+  const g = {
+    navigator: { userAgent: 'node', platform: 'node' },
+    setTimeout, clearTimeout, setImmediate, Blob, URL, TextDecoder, TextEncoder, console: quiet,
+  };
+  g.window = g; g.self = g;
+  new Function('window', 'self', 'globalThis', 'module', 'exports', 'define', 'navigator', 'console',
+    read('vendor/pdfmake-0.3.8.min.js')).call(g, g, g, g, undefined, undefined, undefined, g.navigator, quiet);
+  const lib = g.pdfMake;
+  if (!lib || typeof lib.createPdf !== 'function') throw new Error('internal: the PDF library could not start');
+  new Function('window', 'self', 'globalThis', 'pdfMake', 'module', 'exports', 'define',
+    read('vendor/pdfmake-0.3.8.vfs_fonts.js')).call(g, g, g, g, lib, undefined, undefined, undefined);
+  // The library may never fetch an address or read a local file.
+  // This build has a setter for addresses and a plain property for files.
+  if (typeof lib.setUrlAccessPolicy !== 'function' || !('localAccessPolicy' in lib)) {
+    throw new Error('internal: the PDF library has no access policy; refusing to continue');
+  }
+  lib.setUrlAccessPolicy(() => false);
+  lib.localAccessPolicy = () => false;
+  pdfCache = lib;
+  return lib;
+}
+
 const routes = {
   // Plain text to Markdown.
   'txt>md': async (input) => {
@@ -97,7 +149,8 @@ const routes = {
     const mod = { exports: {} };
     new Function('window', 'module', 'exports', src)(win, mod, mod.exports);
     const Parser = mod.exports.TextToMarkdownParser;
-    return { text: new Parser().parse(input.toString('utf8')) };
+    const md = new Parser().parse(input.toString('utf8'));
+    return { text: await rawOutputGuard().finalize(md) };
   },
 
   // Markdown to plain text.
@@ -159,6 +212,18 @@ const routes = {
     }
     const bytes = new Uint8Array(input);
     return { text: await new win.DocxToMarkdownParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) };
+  },
+
+  // Markdown to PDF, through the site converter's own entry point, which
+  // also refuses a PDF that carries an automatic action. Diagrams stay as
+  // code blocks and images as their alt text.
+  'md>pdf': async (input, opts) => {
+    const { win } = base();
+    if (!win.MarkdownBlockTokenizer) new Function('window', read('lib/site/markdown-block-tokenizer.js'))(win);
+    const Parser = new Function('window', 'MarkdownBlockTokenizer', 'pdfMake', 'console',
+      read('lib/site/md-to-pdf-parser.js') + '\n;return MdToPdfParser;')(win, win.MarkdownBlockTokenizer, pdfMake(), quiet);
+    const blob = await new Parser().parse(input.toString('utf8'), { fileName: opts.title || '' });
+    return { bytes: Buffer.from(await blob.arrayBuffer()) };
   },
 
   // Markdown to a Word document. Diagrams stay as code blocks.

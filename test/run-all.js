@@ -148,6 +148,40 @@ for (const probe of ["fetch('https://example.com')", "require('https').get('http
 const m = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'sync-from-site.js'), '--check'], { encoding: 'utf8' });
 ok('manifest matches', m.status === 0, m.stdout + m.stderr);
 
+// --- Markdown to PDF --------------------------------------------------------
+file('report.md', '# Report\n\nSome **bold** text and a [link](https://example.com).\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n![pic](https://example.com/p.png)\n');
+r = run(['report.md', '--to', 'pdf']);
+ok('md>pdf exits 0', r.code === 0, r.err);
+const pdf = fs.readFileSync(path.join(dir, 'report.pdf'));
+ok('md>pdf is a PDF', pdf.slice(0, 5).toString('latin1') === '%PDF-' && pdf.length > 2000);
+ok('md>pdf carries no automatic action', !/\/(OpenAction|AA|JS|JavaScript|Launch)\b/.test(pdf.toString('latin1')));
+r = run(['report.md', '--to', 'pdf']);
+ok('md>pdf does not replace an existing file', r.code === 1 && /exists/.test(r.err), r.err);
+
+// --- second check of raw Markdown output ------------------------------------
+file('tags.txt', 'A line with <script>alert(1)</script> in it.\n\n<img src=x onerror=alert(1)>\n');
+r = run(['tags.txt', '-o', '-']);
+ok('txt>md leaves no tag-like "<"', r.code === 0 && !/<(?=[A-Za-z\/!?])/.test(r.out), r.out);
+
+// --- folders ----------------------------------------------------------------
+fs.mkdirSync(path.join(dir, 'tree', 'deep'), { recursive: true });
+fs.mkdirSync(path.join(dir, 'treeout'));
+file('tree/one.txt', 'one\n');
+file('tree/deep/two.html', '<h1>Two</h1>\n');
+file('tree/.hidden.txt', 'hidden\n');
+file('tree/skip.md', '# already Markdown\n');
+fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'tree', 'link.txt'));
+r = run(['tree', '-o', 'treeout']);
+ok('folder: converts the top level only', r.code === 0 && fs.existsSync(path.join(dir, 'treeout', 'one.md')) && !fs.existsSync(path.join(dir, 'treeout', 'deep')), r.err);
+ok('folder: skips links, hidden files and Markdown', fs.readdirSync(path.join(dir, 'treeout')).join() === 'one.md');
+r = run(['tree', '-r', '-o', 'treeout', '--force']);
+ok('folder -r: keeps the subfolder', r.code === 0 && /^# Two/m.test(readOut('treeout/deep/two.md')), r.err);
+r = run(['tree', '-o', 'single.md']);
+ok('folder: needs an output folder', r.code === 2, r.err);
+fs.mkdirSync(path.join(dir, 'empty'));
+r = run(['empty']);
+ok('folder: nothing to convert', r.code === 1 && /nothing to convert/.test(r.err), r.err);
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

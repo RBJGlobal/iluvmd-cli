@@ -13,8 +13,9 @@ const KIND_BY_EXT = {
   '.html': 'html', '.htm': 'html',
   '.docx': 'docx',
 };
-const EXT_BY_KIND = { md: '.md', txt: '.txt', html: '.html', docx: '.docx' };
-const BINARY = new Set(['docx']);
+const EXT_BY_KIND = { md: '.md', txt: '.txt', html: '.html', docx: '.docx', pdf: '.pdf' };
+const BINARY = new Set(['docx', 'pdf']);
+const MAX_FOLDER_FILES = 5000;
 
 const EXIT = { OK: 0, FAILED: 1, USAGE: 2, UNSUPPORTED: 3 };
 
@@ -23,14 +24,16 @@ Everything runs on this machine. No uploads and no network calls.
 
 Usage:
   iluvmd <file...>                 convert each file to Markdown
-  iluvmd <file.md...> --to <fmt>   convert Markdown to docx, html or txt
+  iluvmd <file.md...> --to <fmt>   convert Markdown to docx, pdf, html or txt
+  iluvmd <folder> [-r]             convert every supported file in a folder
   iluvmd - --from txt              read standard input, write standard output
 
 Options:
-  --to <fmt>       target format: md, docx, html, txt (default: md)
+  --to <fmt>       target format: md, docx, pdf, html, txt (default: md)
   --from <fmt>     input format, needed only for standard input
   -o, --output <path>  output file, or a folder when converting several files;
                        "-" writes to standard output
+  -r, --recursive  with a folder, include its subfolders
   --force          replace an output file that already exists
   --json           print one JSON result per file
   --raw            do not strip control characters from text printed to
@@ -45,7 +48,7 @@ Exit codes: 0 all converted, 1 a file failed, 2 bad usage, 3 unsupported format.
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const o = { inputs: [], to: null, from: null, output: null, force: false, json: false, raw: false, timeoutMs: DEFAULT_TIMEOUT_MS, help: false, version: false };
+  const o = { inputs: [], to: null, from: null, output: null, force: false, recursive: false, json: false, raw: false, timeoutMs: DEFAULT_TIMEOUT_MS, help: false, version: false };
   let literal = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -61,6 +64,7 @@ function parseArgs(argv) {
     else if (a === '--from') o.from = value('--from').toLowerCase();
     else if (a === '-o' || a === '--output') o.output = value(a);
     else if (a === '--force') o.force = true;
+    else if (a === '-r' || a === '--recursive') o.recursive = true;
     else if (a === '--json') o.json = true;
     else if (a === '--raw') o.raw = true;
     else if (a === '--timeout') {
@@ -92,6 +96,39 @@ function writeOutput(target, data, force) {
     throw new Error('cannot write ' + target + ': ' + e.code);
   }
   try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); }
+}
+
+// The files in a folder that can be converted to the target format, in name
+// order. Symbolic links and names starting with a dot are skipped.
+function listFolder(root, toKind, recursive) {
+  const found = [];
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { throw new Error('cannot read folder ' + dir + ': ' + e.code); }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.isSymbolicLink()) continue;
+      if (e.isDirectory()) { if (recursive) walk(path.join(dir, e.name), path.join(rel, e.name)); continue; }
+      if (!e.isFile()) continue;
+      const kind = KIND_BY_EXT[path.extname(e.name).toLowerCase()];
+      if (!kind || !routes.includes(kind + '>' + toKind)) continue;
+      found.push({ input: path.join(dir, e.name), rel });
+      if (found.length > MAX_FOLDER_FILES) throw new Error('more than ' + MAX_FOLDER_FILES + ' files in ' + root);
+    }
+  };
+  walk(root, '');
+  return found;
+}
+
+// Creates (if needed) and returns a subfolder of the output folder, and
+// refuses one that resolves to a place outside it.
+function subfolder(outRoot, rel) {
+  const dir = path.join(outRoot, rel);
+  fs.mkdirSync(dir, { recursive: true });
+  const realRoot = fs.realpathSync(outRoot);
+  const realDir = fs.realpathSync(dir);
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) throw new Error('output folder leaves ' + outRoot + ': ' + dir);
+  return dir;
 }
 
 function readStdin() {
@@ -133,24 +170,37 @@ async function main(argv) {
     if (k && !EXT_BY_KIND[k]) { err('unknown format "' + k + '"'); return EXIT.USAGE; }
   }
   const toStdout = o.output === '-' || (usesStdin && !o.output);
-  if (toStdout && o.inputs.length > 1) { err('several files cannot be written to standard output'); return EXIT.USAGE; }
+  const toKind = o.to || 'md';
+  // Folders are replaced by the files in them.
+  let jobs = [];
+  try {
+    for (const input of o.inputs) {
+      if (input !== '-' && isDir(input)) {
+        const files = listFolder(input, toKind, o.recursive);
+        if (!files.length) err('nothing to convert in ' + input);
+        jobs = jobs.concat(files);
+      } else jobs.push({ input, rel: '' });
+    }
+  } catch (e) { err(e.message); return EXIT.FAILED; }
+  const several = jobs.length > 1 || o.inputs.some((i) => i !== '-' && isDir(i));
+  if (!jobs.length) return EXIT.FAILED;
+  if (toStdout && several) { err('several files cannot be written to standard output'); return EXIT.USAGE; }
   if (toStdout && o.json) { err('--json cannot be combined with output on standard output'); return EXIT.USAGE; }
   const outIsDir = !!o.output && o.output !== '-' && (isDir(o.output) || /[\\/]$/.test(o.output));
-  if (o.inputs.length > 1 && o.output && !outIsDir) { err('with several files, --output must be an existing folder'); return EXIT.USAGE; }
+  if (several && o.output && !outIsDir) { err('with several files, --output must be an existing folder'); return EXIT.USAGE; }
   if (outIsDir && !isDir(o.output)) { err('output folder does not exist: ' + o.output); return EXIT.USAGE; }
 
   let failed = 0;
   let unsupported = 0;
-  for (const input of o.inputs) {
+  for (const { input, rel } of jobs) {
     const result = { input: input === '-' ? '(stdin)' : input, output: null, ok: false };
     try {
       const fromKind = input === '-'
         ? (o.from || (o.to && o.to !== 'md' ? 'md' : 'txt'))
         : (o.from || KIND_BY_EXT[path.extname(input).toLowerCase()]);
       if (!fromKind) { unsupported++; throw new Error('unsupported file type: ' + input); }
-      const toKind = o.to || 'md';
       if (fromKind === toKind) throw new UsageError(fromKind === 'md'
-        ? 'Markdown input needs --to (docx, html or txt)' : 'input and output formats are the same');
+        ? 'Markdown input needs --to (docx, pdf, html or txt)' : 'input and output formats are the same');
       const route = fromKind + '>' + toKind;
       if (!routes.includes(route)) { unsupported++; throw new Error('cannot convert ' + fromKind + ' to ' + toKind + ' yet'); }
       if (toStdout && BINARY.has(toKind) && process.stdout.isTTY) throw new UsageError('refusing to write a binary file to the terminal (use --output)');
@@ -168,7 +218,7 @@ async function main(argv) {
         const name = input === '-' ? 'output' : path.basename(input, path.extname(input));
         const target = o.output && !outIsDir
           ? o.output
-          : path.join(outIsDir ? o.output : path.dirname(input), name + EXT_BY_KIND[toKind]);
+          : path.join(outIsDir ? subfolder(o.output, rel) : path.dirname(input), name + EXT_BY_KIND[toKind]);
         writeOutput(target, payload, o.force);
         result.output = target;
       }

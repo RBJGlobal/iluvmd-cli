@@ -23,9 +23,15 @@ const FILES = [
   ['markdown-parser.js', 'lib/site/markdown-parser.js'],
   ['html-to-md-parser.js', 'lib/site/html-to-md-parser.js'],
   ['docx-to-md-parser.js', 'lib/site/docx-to-md-parser.js'],
+  ['md-to-pdf-parser.js', 'lib/site/md-to-pdf-parser.js'],
+  ['raw-output-guard.js', 'lib/site/raw-output-guard.js'],
+  ['raw-output-guard-worker.js', 'lib/site/raw-output-guard-worker.js'],
   ['vendor/markdown-it/markdown-it-14.3.0.min.js', 'vendor/markdown-it-14.3.0.min.js'],
   ['vendor/docx-9.6.1.umd.js', 'vendor/docx-9.6.1.umd.js'],
   ['vendor/jszip/jszip-3.10.1.min.js', 'vendor/jszip-3.10.1.min.js'],
+  ['vendor/pdfmake-0.3.8.min.js', 'vendor/pdfmake-0.3.8.min.js'],
+  ['vendor/pdfmake-0.3.8.vfs_fonts.js', 'vendor/pdfmake-0.3.8.vfs_fonts.js'],
+  ['vendor/marked/marked-15.0.12.umd.js', 'vendor/marked-15.0.12.umd.js'],
 ];
 
 // Words that must not appear in a synced converter file (vendor bundles are
