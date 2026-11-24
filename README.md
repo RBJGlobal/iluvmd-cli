@@ -290,7 +290,7 @@ file that shows the problem.
 
 ```
 git clone https://github.com/RBJGlobal/iluvmd-cli.git
-cd ilovemd-cli
+cd iluvmd-cli
 npm install --ignore-scripts
 node test/run-all.js
 ```
