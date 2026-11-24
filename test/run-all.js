@@ -1,0 +1,107 @@
+'use strict';
+// End-to-end checks of the command line tool. Zero dependencies:
+//   node test/run-all.js
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const BIN = path.join(__dirname, '..', 'bin', 'iluvmd.js');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iluvmd-test-'));
+const cp = (...codes) => String.fromCodePoint(...codes);
+
+let pass = 0;
+let fail = 0;
+function ok(name, cond, extra) {
+  if (cond) { pass++; return; }
+  fail++;
+  console.log('FAIL: ' + name + (extra != null ? '\n  ' + String(extra).slice(0, 400) : ''));
+}
+function run(args, input) {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: dir, input, encoding: 'utf8' });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
+const file = (name, text) => { fs.writeFileSync(path.join(dir, name), text); return name; };
+const readOut = (name) => fs.readFileSync(path.join(dir, name), 'utf8');
+
+// --- text to Markdown -------------------------------------------------------
+file('notes.txt', ['WEEKLY NOTES', '', 'A paragraph.', '', cp(0x2022) + ' first point', cp(0x2022) + ' second point', '',
+  'See https://example.com and file:///Users/x/secret.txt', ''].join('\n'));
+let r = run(['notes.txt']);
+ok('txt>md exits 0', r.code === 0, r.err);
+let md = readOut('notes.md');
+ok('txt>md heading', /^# WEEKLY NOTES$/m.test(md), md);
+ok('txt>md bullets', /^- first point$/m.test(md), md);
+ok('txt>md link', md.includes('[https://example.com](https://example.com)'), md);
+ok('txt>md keeps no link to a local file', !/\]\(file:/.test(md), md);
+ok('txt>md is idempotent', (() => {
+  file('again.txt', md);
+  run(['again.txt']);
+  return readOut('again.md') === md;
+})());
+
+// --- overwrite and symlink rules -------------------------------------------
+r = run(['notes.txt']);
+ok('existing output is not replaced', r.code === 1 && /exists/.test(r.err), r.err);
+r = run(['notes.txt', '--force']);
+ok('--force replaces', r.code === 0, r.err);
+const outside = path.join(dir, 'outside-target');
+fs.symlinkSync(outside, path.join(dir, 'link.md'));
+r = run(['notes.txt', '-o', 'link.md', '--force']);
+ok('symlink target refused', r.code === 1 && /symbolic link/.test(r.err) && !fs.existsSync(outside), r.err);
+
+// --- Markdown to Word -------------------------------------------------------
+file('doc.md', '# Report\n\nA paragraph with *emphasis*.\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |\n');
+r = run(['doc.md', '--to', 'docx', '--json']);
+ok('md>docx exits 0', r.code === 0, r.err + r.out);
+ok('md>docx json line', (() => { try { const j = JSON.parse(r.out); return j.ok && j.output === 'doc.docx'; } catch (e) { return false; } })(), r.out);
+const docx = fs.readFileSync(path.join(dir, 'doc.docx'));
+ok('md>docx is a zip', docx.subarray(0, 2).toString('latin1') === 'PK' && docx.length > 1000);
+ok('md>docx has the document part', docx.includes(Buffer.from('word/document.xml')));
+
+// --- Markdown to text, standard streams -------------------------------------
+r = run(['doc.md', '--to', 'txt', '-o', '-']);
+ok('md>txt to stdout', r.code === 0 && /Report/.test(r.out) && !/[#*]/.test(r.out.split('\n')[0]), r.out);
+ok('text output ends with a newline', r.out.endsWith('\n'));
+r = run(['-'], 'HELLO THERE\n');
+ok('stdin to stdout', r.code === 0 && r.out === '# HELLO THERE\n', JSON.stringify(r.out));
+const esc = cp(0x1b);
+const hostile = 'a' + esc + '[31mred' + esc + '[0m ' + cp(0x202e) + 'evil' + cp(0x200b) + cp(0xe0041) + cp(0x9b) + '\n';
+r = run(['-'], hostile);
+ok('control characters stripped on stdout', r.code === 0 && ![0x1b, 0x202e, 0x200b, 0xe0041, 0x9b].some((c) => r.out.includes(cp(c))), JSON.stringify(r.out));
+r = run(['-', '--raw'], 'plain' + cp(0x200b) + 'text here\n');
+ok('--raw keeps them', r.out.includes(cp(0x200b)), JSON.stringify(r.out));
+
+// --- usage and unsupported --------------------------------------------------
+ok('no input is a usage error', run([]).code === 2);
+ok('unknown option is a usage error', run(['--nope']).code === 2);
+ok('markdown without --to is a usage error', run(['doc.md']).code === 2);
+ok('unsupported type exits 3', run(['x.pdf']).code === 3);
+ok('missing file exits 1', run(['missing.txt']).code === 1);
+file('-dash.txt', 'TITLE\n');
+ok('file name starting with a dash after --', run(['--', '-dash.txt']).code === 0 && fs.existsSync(path.join(dir, '-dash.md')));
+r = run(['doc.md', 'notes.txt', '-o', 'one.md']);
+ok('several files need a folder', r.code === 2, r.err);
+ok('--help', run(['--help']).code === 0);
+
+// --- limits -----------------------------------------------------------------
+file('slow.txt', ('A plain line of text number ' + '\n').repeat(200000));
+r = run(['slow.txt', '--timeout', '0.02']);
+ok('timeout stops a long conversion', r.code === 1 && /stopped after/.test(r.err), r.err || 'finished within the limit');
+
+// --- no network -------------------------------------------------------------
+const guard = path.join(__dirname, '..', 'src', 'netguard.js');
+for (const probe of ["fetch('https://example.com')", "require('https').get('https://example.com')",
+  "require('http').request('http://example.com')", "require('net').connect(80, '192.0.2.1')",
+  "require('dns').lookup('example.com', () => {})", "new WebSocket('wss://example.com')"]) {
+  const p = spawnSync(process.execPath, ['-e', 'require(' + JSON.stringify(guard) + ').install(); ' + probe], { encoding: 'utf8' });
+  ok('network blocked: ' + probe, p.status !== 0 && /makes no network calls/.test(p.stderr), p.stderr);
+}
+
+// --- synced files match the manifest ---------------------------------------
+const m = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'sync-from-site.js'), '--check'], { encoding: 'utf8' });
+ok('manifest matches', m.status === 0, m.stdout + m.stderr);
+
+fs.rmSync(dir, { recursive: true, force: true });
+console.log(pass + ' passed, ' + fail + ' failed');
+process.exit(fail ? 1 : 0);
