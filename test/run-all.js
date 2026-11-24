@@ -87,9 +87,12 @@ ok('md>html has no script, handler or frame', !/<script|onerror|<iframe|javascri
 ok('md>html has no remote image', !/<img[^>]+src="(https?:)?\/\//i.test(html), html);
 ok('md>html turns a remote image into a link', html.includes('<a href="https://tracker.example/p.png"'), html);
 ok('md>html keeps a local image', html.includes('<img src="./pic.png" alt="local">'), html);
-file('a"b<c>.md', '# x\n');
-r = run(['a"b<c>.md', '--to', 'html']);
-ok('md>html escapes the title', r.code === 0 && readOut('a"b<c>.html').includes('<title>a&quot;b&lt;c&gt;</title>'), r.err);
+// Windows does not allow these characters in a file name.
+if (process.platform !== 'win32') {
+  file('a"b<c>.md', '# x\n');
+  r = run(['a"b<c>.md', '--to', 'html']);
+  ok('md>html escapes the title', r.code === 0 && readOut('a"b<c>.html').includes('<title>a&quot;b&lt;c&gt;</title>'), r.err);
+}
 
 // --- HTML to Markdown -------------------------------------------------------
 file('in.html', '<h1>Hi</h1><p>Some <b>bold</b> and <a href="https://example.com">link</a><script>steal()</script></p>' +
