@@ -197,6 +197,59 @@ fs.mkdirSync(path.join(dir, 'empty'));
 r = run(['empty']);
 ok('folder: nothing to convert', r.code === 1 && /nothing to convert/.test(r.err), r.err);
 
+// --- limits, encodings and planning -----------------------------------------
+file('big.md', '# H\n\n' + 'word '.repeat(220000) + '\n');
+for (const fmt of ['html', 'txt']) {
+  r = run(['big.md', '--to', fmt]);
+  ok('md>' + fmt + ' refuses input over its limit', r.code === 1 && /over the .* limit/.test(r.err) && !fs.existsSync(path.join(dir, 'big.' + fmt)), r.err);
+}
+ok('error lines name the file', /big\.md: /.test(r.err), r.err);
+file('bom.md', cp(0xFEFF) + '# Title\n\nPara\n');
+r = run(['bom.md', '--to', 'html', '-o', '-']);
+ok('a byte order mark does not break the first heading', r.code === 0 && /<h1[^>]*>Title<\/h1>/.test(r.out), r.out);
+fs.writeFileSync(path.join(dir, 'latin1.txt'), Buffer.from([0x43, 0x61, 0x66, 0xE9, 0x0A]));
+r = run(['latin1.txt']);
+ok('text that is not UTF-8 is refused', r.code === 1 && /not UTF-8/.test(r.err) && !fs.existsSync(path.join(dir, 'latin1.md')), r.err);
+file('crlf.txt', 'TITLE LINE\r\n\r\nA paragraph.\r\n');
+r = run(['crlf.txt', '-o', '-']);
+ok('CRLF input converts', r.code === 0 && /A paragraph\./.test(r.out) && !r.out.includes('\r'), r.out);
+const joined = cp(0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467);
+file('zwj.txt', 'Family ' + joined + ' here\n');
+r = run(['zwj.txt', '-o', '-']);
+ok('joiners survive on standard output', r.code === 0 && r.out.includes(joined), r.out);
+
+file('same.txt', 'one\n');
+file('same.html', '<p>two</p>\n');
+r = run(['same.txt', 'same.html', '--force']);
+ok('two inputs with one output name: nothing is written', r.code === 2 && /both be written/.test(r.err) && !fs.existsSync(path.join(dir, 'same.md')), r.err);
+file('self.html', '<p>keep me</p>\n');
+r = run(['self.html', '-o', 'self.html', '--force']);
+ok('output may not replace the input', r.code === 2 && readOut('self.html').includes('keep me'), r.err);
+file('first.txt', 'first\n');
+file('second.md', '# second\n');
+r = run(['first.txt', 'second.md']);
+ok('a wrong command writes nothing', r.code === 2 && !fs.existsSync(path.join(dir, 'first.md')), r.err);
+r = run(['first.txt', '-o', '--force']);
+ok('an option is not taken as a value', r.code === 2 && !fs.existsSync(path.join(dir, '--force')), r.err);
+r = run(['second.md', '--to=txt', '-o', '-']);
+ok('--name=value works', r.code === 0 && /second/.test(r.out), r.err);
+r = run(['first.txt', 'second.md', '--to', 'docx']);
+ok('unsupported route among good files', r.code === 3 && fs.existsSync(path.join(dir, 'second.docx')) && /first\.txt: cannot convert/.test(r.err), r.err);
+r = run(['tree', '-r', '-o', 'made/here/']);
+ok('an output folder ending in "/" is created', r.code === 0 && fs.existsSync(path.join(dir, 'made', 'here', 'deep', 'two.md')), r.err);
+r = run(['empty', '--json']);
+ok('empty folder gives a JSON line', r.code === 1 && JSON.parse(r.out.trim()).ok === false, r.out);
+file('keep.txt', 'new text\n');
+file('keep.md', 'old\n');
+r = run(['keep.txt', '--force']);
+ok('--force replaces and leaves no temporary file', r.code === 0 && /new text/.test(readOut('keep.md')) && !fs.readdirSync(dir).some((n) => n.endsWith('.iluvmd-tmp')));
+r = run(['first.txt', '-o', '-', '--timeout', '0.0001']);
+ok('a tiny timeout is honored', r.code === 1 && /stopped after/.test(r.err), r.err);
+r = run(['report.md', '--to', 'docx', '-o', 'pub.docx']);
+ok('md>docx through the public entry point', r.code === 0 && fs.readFileSync(path.join(dir, 'pub.docx')).slice(0, 2).toString() === 'PK', r.err);
+r = spawnSync(process.execPath, [BIN, 'report.pdf', '--from', 'pdf', '-o', '-'], { cwd: dir, encoding: 'utf8' });
+ok('pdf>md table text survives a round trip', r.status === 0 && /Report/.test(r.stdout) && /bold/.test(r.stdout), r.stderr);
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

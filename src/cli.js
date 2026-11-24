@@ -16,7 +16,7 @@ const KIND_BY_EXT = {
 };
 const EXT_BY_KIND = { md: '.md', txt: '.txt', html: '.html', docx: '.docx', pdf: '.pdf' };
 const BINARY = new Set(['docx', 'pdf']);
-const MAX_FOLDER_FILES = 5000;
+const MAX_FILES = 5000;
 
 const EXIT = { OK: 0, FAILED: 1, USAGE: 2, UNSUPPORTED: 3 };
 
@@ -31,19 +31,22 @@ Usage:
 
 Options:
   --to <fmt>       target format: md, docx, pdf, html, txt (default: md)
-  --from <fmt>     input format, needed only for standard input
-  -o, --output <path>  output file, or a folder when converting several files;
+  --from <fmt>     read the input as this format instead of going by the file
+                   name; needed for standard input
+  -o, --output <path>  output file, or a folder when converting several files
+                       (end the path with "/" to have it created);
                        "-" writes to standard output
   -r, --recursive  with a folder, include its subfolders
   --force          replace an output file that already exists
   --json           print one JSON result per file
-  --raw            do not strip control characters from text printed to
+  --raw            do not strip control characters from text written to
                    standard output
   --timeout <s>    seconds allowed per file (default ${DEFAULT_TIMEOUT_MS / 1000})
   -h, --help       show this help
   -v, --version    show the version
 
-Exit codes: 0 all converted, 1 a file failed, 2 bad usage, 3 unsupported format.
+Exit codes: 0 all converted, 1 a file failed, 2 bad usage (nothing is
+written), 3 the only failures were unsupported formats.
 `;
 
 class UsageError extends Error {}
@@ -52,26 +55,34 @@ function parseArgs(argv) {
   const o = { inputs: [], to: null, from: null, output: null, force: false, recursive: false, json: false, raw: false, timeoutMs: DEFAULT_TIMEOUT_MS, help: false, version: false };
   let literal = false;
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    const value = (name) => {
-      if (i + 1 >= argv.length) throw new UsageError(name + ' needs a value');
-      return argv[++i];
-    };
+    let a = argv[i];
     if (literal || a === '-' || !a.startsWith('-')) { o.inputs.push(a); continue; }
     if (a === '--') { literal = true; continue; }
-    if (a === '-h' || a === '--help') o.help = true;
-    else if (a === '-v' || a === '--version') o.version = true;
-    else if (a === '--to') o.to = value('--to').toLowerCase();
-    else if (a === '--from') o.from = value('--from').toLowerCase();
-    else if (a === '-o' || a === '--output') o.output = value(a);
-    else if (a === '--force') o.force = true;
-    else if (a === '-r' || a === '--recursive') o.recursive = true;
-    else if (a === '--json') o.json = true;
-    else if (a === '--raw') o.raw = true;
+    // --name=value is the same as --name value.
+    let inline = null;
+    const eq = a.indexOf('=');
+    if (a.startsWith('--') && eq !== -1) { inline = a.slice(eq + 1); a = a.slice(0, eq); }
+    const value = () => {
+      if (inline !== null) return inline;
+      if (i + 1 >= argv.length) throw new UsageError(a + ' needs a value');
+      const v = argv[++i];
+      if (v.startsWith('-') && !(v === '-' && (a === '-o' || a === '--output'))) throw new UsageError(a + ' needs a value, but the next word is the option ' + v);
+      return v;
+    };
+    const flag = () => { if (inline !== null) throw new UsageError(a + ' takes no value'); };
+    if (a === '-h' || a === '--help') { flag(); o.help = true; }
+    else if (a === '-v' || a === '--version') { flag(); o.version = true; }
+    else if (a === '--to') o.to = value().toLowerCase();
+    else if (a === '--from') o.from = value().toLowerCase();
+    else if (a === '-o' || a === '--output') o.output = value();
+    else if (a === '--force') { flag(); o.force = true; }
+    else if (a === '-r' || a === '--recursive') { flag(); o.recursive = true; }
+    else if (a === '--json') { flag(); o.json = true; }
+    else if (a === '--raw') { flag(); o.raw = true; }
     else if (a === '--timeout') {
-      const s = Number(value('--timeout'));
+      const s = Number(value());
       if (!Number.isFinite(s) || s <= 0 || s > 3600) throw new UsageError('--timeout takes a number of seconds, up to 3600');
-      o.timeoutMs = Math.round(s * 1000);
+      o.timeoutMs = Math.max(1, Math.ceil(s * 1000));
     } else throw new UsageError('unknown option ' + a);
   }
   return o;
@@ -80,32 +91,47 @@ function parseArgs(argv) {
 function isDir(p) {
   try { return fs.statSync(p).isDirectory(); } catch (e) { return false; }
 }
+function isLink(p) {
+  try { return fs.lstatSync(p).isSymbolicLink(); } catch (e) { return false; }
+}
 
 // Never follows a symbolic link at the target, and never replaces a file
-// unless --force was given.
+// unless --force was given. With --force the new file is written beside the
+// target and moved into place, so a failed write leaves the old file whole.
 function writeOutput(target, data, force) {
   const c = fs.constants;
-  const flags = force
-    ? c.O_WRONLY | c.O_CREAT | c.O_TRUNC | c.O_NOFOLLOW
-    : c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW;
+  // O_NOFOLLOW does not exist on Windows, so the link is also checked here.
+  const NOFOLLOW = c.O_NOFOLLOW || 0;
+  if (isLink(target)) throw new Error('output is a symbolic link, not written: ' + target);
+  const dest = force ? target + '.' + process.pid + '-' + Date.now().toString(36) + '.iluvmd-tmp' : target;
   let fd;
   try {
-    fd = fs.openSync(target, flags, 0o644);
+    fd = fs.openSync(dest, c.O_WRONLY | c.O_CREAT | c.O_EXCL | NOFOLLOW, 0o644);
   } catch (e) {
     if (e.code === 'EEXIST') throw new Error('output exists (use --force to replace): ' + target);
     if (e.code === 'ELOOP') throw new Error('output is a symbolic link, not written: ' + target);
     throw new Error('cannot write ' + target + ': ' + e.code);
   }
-  try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); }
+  try {
+    try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); }
+    if (force) fs.renameSync(dest, target);
+  } catch (e) {
+    try { fs.unlinkSync(dest); } catch (e2) { /* nothing to remove */ }
+    throw new Error('cannot write ' + target + ': ' + (e.code || e.message));
+  }
 }
 
 // The files in a folder that can be converted to the target format, in name
-// order. Symbolic links and names starting with a dot are skipped.
-function listFolder(root, toKind, recursive) {
+// order. Symbolic links and names starting with a dot are skipped. A
+// subfolder that cannot be read is reported and the rest continue.
+function listFolder(root, toKind, recursive, problems) {
   const found = [];
   const walk = (dir, rel) => {
     let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { throw new Error('cannot read folder ' + dir + ': ' + e.code); }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+      problems.push({ input: dir, error: 'cannot read folder: ' + e.code });
+      return;
+    }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const e of entries) {
       if (e.name.startsWith('.') || e.isSymbolicLink()) continue;
@@ -113,8 +139,7 @@ function listFolder(root, toKind, recursive) {
       if (!e.isFile()) continue;
       const kind = KIND_BY_EXT[path.extname(e.name).toLowerCase()];
       if (!kind || !routes.includes(kind + '>' + toKind)) continue;
-      found.push({ input: path.join(dir, e.name), rel });
-      if (found.length > MAX_FOLDER_FILES) throw new Error('more than ' + MAX_FOLDER_FILES + ' files in ' + root);
+      found.push({ input: path.join(dir, e.name), rel, fromFolder: true });
     }
   };
   walk(root, '');
@@ -124,11 +149,11 @@ function listFolder(root, toKind, recursive) {
 // Creates (if needed) and returns a subfolder of the output folder, and
 // refuses one that resolves to a place outside it.
 function subfolder(outRoot, rel) {
+  if (!rel) return outRoot;
   const dir = path.join(outRoot, rel);
   fs.mkdirSync(dir, { recursive: true });
-  const realRoot = fs.realpathSync(outRoot);
-  const realDir = fs.realpathSync(dir);
-  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) throw new Error('output folder leaves ' + outRoot + ': ' + dir);
+  const back = path.relative(fs.realpathSync(outRoot), fs.realpathSync(dir));
+  if (back.startsWith('..') || path.isAbsolute(back)) throw new Error('output folder leaves ' + outRoot + ': ' + dir);
   return dir;
 }
 
@@ -148,10 +173,19 @@ function readStdin() {
 
 function readInput(file) {
   let st;
-  try { st = fs.statSync(file); } catch (e) { throw new Error('cannot read ' + file + ': ' + e.code); }
-  if (!st.isFile()) throw new Error('not a file: ' + file);
-  if (st.size > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB: ' + file);
+  try { st = fs.statSync(file); } catch (e) { throw new Error('cannot read file: ' + e.code); }
+  if (!st.isFile()) throw new Error('not a file');
+  if (st.size > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB');
   return fs.readFileSync(file);
+}
+
+// Two paths that name the same file on this system.
+function fileKey(p) {
+  let full = path.resolve(p);
+  try { full = fs.realpathSync(full); } catch (e) {
+    try { full = path.join(fs.realpathSync(path.dirname(full)), path.basename(full)); } catch (e2) { /* keep as is */ }
+  }
+  return process.platform === 'darwin' || process.platform === 'win32' ? full.toLowerCase() : full;
 }
 
 async function main(argv) {
@@ -163,74 +197,107 @@ async function main(argv) {
   }
   if (o.help) { process.stdout.write(HELP); return EXIT.OK; }
   if (o.version) { process.stdout.write(require('../package.json').version + '\n'); return EXIT.OK; }
-  if (!o.inputs.length) { err('no input file (see iluvmd --help)'); return EXIT.USAGE; }
 
-  const usesStdin = o.inputs.includes('-');
-  if (usesStdin && o.inputs.length > 1) { err('standard input cannot be combined with files'); return EXIT.USAGE; }
-  for (const k of [o.to, o.from]) {
-    if (k && !EXT_BY_KIND[k]) { err('unknown format "' + k + '"'); return EXIT.USAGE; }
-  }
-  const toStdout = o.output === '-' || (usesStdin && !o.output);
-  const toKind = o.to || 'md';
-  // Folders are replaced by the files in them.
-  let jobs = [];
+  // Everything is checked and every output path is decided before the first
+  // conversion, so a wrong command writes nothing.
+  let jobs;
+  let toStdout;
   try {
+    if (!o.inputs.length) throw new UsageError('no input file (see iluvmd --help)');
+    const usesStdin = o.inputs.includes('-');
+    if (usesStdin && o.inputs.length > 1) throw new UsageError('standard input cannot be combined with files');
+    for (const k of [o.to, o.from]) {
+      if (k && !EXT_BY_KIND[k]) throw new UsageError('unknown format "' + k + '"');
+    }
+    const toKind = o.to || 'md';
+    toStdout = o.output === '-' || (usesStdin && !o.output);
+
+    const problems = [];
+    jobs = [];
+    let folders = 0;
     for (const input of o.inputs) {
       if (input !== '-' && isDir(input)) {
-        const files = listFolder(input, toKind, o.recursive);
-        if (!files.length) err('nothing to convert in ' + input);
+        folders++;
+        const files = listFolder(input, toKind, o.recursive, problems);
+        if (!files.length) problems.push({ input, error: 'nothing to convert to ' + toKind + ' in this folder' });
         jobs = jobs.concat(files);
-      } else jobs.push({ input, rel: '' });
+      } else jobs.push({ input, rel: '', fromFolder: false });
     }
-  } catch (e) { err(e.message); return EXIT.FAILED; }
-  const several = jobs.length > 1 || o.inputs.some((i) => i !== '-' && isDir(i));
-  if (!jobs.length) return EXIT.FAILED;
-  if (toStdout && several) { err('several files cannot be written to standard output'); return EXIT.USAGE; }
-  if (toStdout && o.json) { err('--json cannot be combined with output on standard output'); return EXIT.USAGE; }
-  const outIsDir = !!o.output && o.output !== '-' && (isDir(o.output) || /[\\/]$/.test(o.output));
-  if (several && o.output && !outIsDir) { err('with several files, --output must be an existing folder'); return EXIT.USAGE; }
-  if (outIsDir && !isDir(o.output)) { err('output folder does not exist: ' + o.output); return EXIT.USAGE; }
+    if (jobs.length > MAX_FILES) throw new UsageError('more than ' + MAX_FILES + ' files; convert the folders in smaller groups');
+    const several = jobs.length > 1 || folders > 0;
+    if (toStdout && several) throw new UsageError('several files cannot be written to standard output');
+    if (toStdout && o.json) throw new UsageError('--json cannot be combined with output on standard output');
+
+    let outDir = null;
+    if (o.output && o.output !== '-') {
+      const asFolder = o.output.endsWith('/') || o.output.endsWith(path.sep);
+      if (isDir(o.output)) outDir = o.output;
+      else if (asFolder) outDir = o.output;
+      else if (several) throw new UsageError('with several files, --output must be a folder (end the path with "/" to create it)');
+    }
+
+    const seen = new Map();
+    for (const job of jobs) {
+      const { input } = job;
+      job.name = input === '-' ? '(stdin)' : input;
+      const ext = input === '-' ? '' : path.extname(input);
+      const fromKind = (!job.fromFolder && o.from) || KIND_BY_EXT[ext.toLowerCase()]
+        || (input === '-' ? (toKind !== 'md' ? 'md' : 'txt') : null);
+      if (!fromKind) { job.unsupported = true; job.error = 'unsupported file type'; continue; }
+      if (fromKind === toKind) {
+        throw new UsageError(job.name + ': ' + (o.to ? 'the input is already ' + toKind : 'Markdown input needs --to (docx, pdf, html or txt)'));
+      }
+      job.route = fromKind + '>' + toKind;
+      if (!routes.includes(job.route)) { job.unsupported = true; job.error = 'cannot convert ' + fromKind + ' to ' + toKind + ' yet'; continue; }
+      if (toStdout) {
+        if (BINARY.has(toKind) && process.stdout.isTTY) throw new UsageError('refusing to write a binary file to the terminal (use --output)');
+        continue;
+      }
+      const base = input === '-' ? 'output' : path.basename(input, ext);
+      job.title = input === '-' ? 'Document' : base;
+      job.target = o.output && !outDir ? o.output
+        : path.join(outDir ? path.join(outDir, job.rel) : path.dirname(input), base + EXT_BY_KIND[toKind]);
+      job.outDir = outDir;
+      const key = fileKey(job.target);
+      if (seen.has(key)) throw new UsageError(seen.get(key) + ' and ' + job.name + ' would both be written to ' + job.target);
+      seen.set(key, job.name);
+      if (input !== '-' && fileKey(input) === key) throw new UsageError(job.name + ': the output would replace the input');
+    }
+    for (const job of jobs) if (job.title == null) job.title = job.input === '-' ? 'Document' : path.basename(job.input, path.extname(job.input));
+    if (outDir && !isDir(outDir)) {
+      try { fs.mkdirSync(outDir, { recursive: true }); } catch (e) { throw new UsageError('cannot create output folder ' + outDir + ': ' + e.code); }
+    }
+    jobs = problems.map((p) => ({ name: p.input, error: p.error })).concat(jobs);
+  } catch (e) {
+    if (e instanceof UsageError) { err(e.message); return EXIT.USAGE; }
+    throw e;
+  }
 
   let failed = 0;
   let unsupported = 0;
-  for (const { input, rel } of jobs) {
-    const result = { input: input === '-' ? '(stdin)' : input, output: null, ok: false };
+  for (const job of jobs) {
+    const result = { input: job.name, output: null, ok: false };
     try {
-      const fromKind = input === '-'
-        ? (o.from || (o.to && o.to !== 'md' ? 'md' : 'txt'))
-        : (o.from || KIND_BY_EXT[path.extname(input).toLowerCase()]);
-      if (!fromKind) { unsupported++; throw new Error('unsupported file type: ' + input); }
-      if (fromKind === toKind) throw new UsageError(fromKind === 'md'
-        ? 'Markdown input needs --to (docx, pdf, html or txt)' : 'input and output formats are the same');
-      const route = fromKind + '>' + toKind;
-      if (!routes.includes(route)) { unsupported++; throw new Error('cannot convert ' + fromKind + ' to ' + toKind + ' yet'); }
-      if (toStdout && BINARY.has(toKind) && process.stdout.isTTY) throw new UsageError('refusing to write a binary file to the terminal (use --output)');
-
-      const data = input === '-' ? await readStdin() : readInput(input);
-      const title = input === '-' ? 'Document' : path.basename(input, path.extname(input));
-      const out = await runConversion(route, data, { timeoutMs: o.timeoutMs, title });
+      if (job.error) { if (job.unsupported) unsupported++; throw new Error(job.error); }
+      const data = job.input === '-' ? await readStdin() : readInput(job.input);
+      const out = await runConversion(job.route, data, { timeoutMs: o.timeoutMs, title: job.title });
       // Text output always ends with a newline.
       const payload = out.bytes ? out.bytes : (out.text.endsWith('\n') ? out.text : out.text + '\n');
-
       if (toStdout) {
         process.stdout.write(out.bytes || o.raw ? payload : clean(payload));
         result.output = '(stdout)';
       } else {
-        const name = input === '-' ? 'output' : path.basename(input, path.extname(input));
-        const target = o.output && !outIsDir
-          ? o.output
-          : path.join(outIsDir ? subfolder(o.output, rel) : path.dirname(input), name + EXT_BY_KIND[toKind]);
-        writeOutput(target, payload, o.force);
-        result.output = target;
+        if (job.outDir) subfolder(job.outDir, job.rel);
+        writeOutput(job.target, payload, o.force);
+        result.output = job.target;
       }
       result.ok = true;
     } catch (e) {
-      if (e instanceof UsageError) { err(e.message); return EXIT.USAGE; }
       result.error = clean(String((e && e.message) || e));
       failed++;
     }
     if (o.json) process.stdout.write(JSON.stringify(result) + '\n');
-    else if (!result.ok) err(result.error);
+    else if (!result.ok) err(result.input + ': ' + result.error);
     else if (!toStdout) process.stderr.write(clean(result.input + ' -> ' + result.output) + '\n');
   }
   if (!failed) return EXIT.OK;

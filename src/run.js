@@ -8,7 +8,7 @@ const HEAP_MB = 768;
 // Runs one conversion in a worker. Resolves { text } or { bytes }; rejects
 // with a plain Error on failure, timeout or memory exhaustion.
 function runConversion(route, input, opts) {
-  const timeoutMs = (opts && opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
+  const timeoutMs = opts && opts.timeoutMs != null ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'worker.js'), {
       workerData: { route, input, opts: { title: opts && opts.title } },
@@ -18,6 +18,9 @@ function runConversion(route, input, opts) {
       stdout: true,
       stderr: true,
     });
+    // Drop whatever the libraries print.
+    worker.stdout.resume();
+    worker.stderr.resume();
     let done = false;
     const finish = (fn, value) => {
       if (done) return;
@@ -27,7 +30,7 @@ function runConversion(route, input, opts) {
       fn(value);
     };
     const timer = setTimeout(() => finish(reject,
-      new Error('conversion stopped after ' + Math.round(timeoutMs / 1000) + ' s (use --timeout to allow more)')), timeoutMs);
+      new Error('conversion stopped after ' + (timeoutMs / 1000) + ' s (use --timeout to allow more)')), timeoutMs);
     worker.on('message', (m) => {
       if (m.ok) finish(resolve, { text: m.text, bytes: m.bytes && Buffer.from(m.bytes) });
       else finish(reject, new Error(m.error));

@@ -31,6 +31,26 @@ function patchOnce(src, from, to, label) {
   return parts.join(to);
 }
 
+// Text input must be UTF-8. A byte order mark at the start is dropped.
+function decode(buf) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) {
+    throw new Error('the input is not UTF-8 text');
+  }
+}
+
+// Each site converter has an input limit. Over the limit some of them cut
+// the text short or return a notice as if it were the result, which a
+// script cannot tell from success. So the limit is checked here first, and
+// the number is confirmed against the converter's own source: if a sync
+// changes it, loading fails instead of drifting.
+function limit(rel, literal, value, what, size, unit) {
+  if (read(rel).split(literal).length !== 2) throw new Error('internal: input limit changed in ' + rel);
+  if (size > value) {
+    throw new Error('input is over the ' + what + ' limit of ' + value.toLocaleString('en-US') + ' ' + unit);
+  }
+}
+const MB = 1024 * 1024;
+
 let cache = null;
 function base() {
   if (cache) return cache;
@@ -85,6 +105,7 @@ const PAGE_CSS = [
   'pre{background:#f8f9fa;padding:15px;border-radius:8px;overflow-x:auto}pre code{background:transparent;padding:0}',
   'blockquote{border-left:4px solid #ccd3da;margin:1em 0;padding:10px 20px;background:#f8f9fa}',
   'table{border-collapse:collapse}th,td{border:1px solid #e1e8ed;padding:6px 12px}img{max-width:100%}',
+  '.md-align-left{text-align:left}.md-align-center{text-align:center}.md-align-right{text-align:right}',
 ].join('');
 
 // The site checks Markdown that leaves as raw text with a second parser
@@ -149,7 +170,9 @@ const routes = {
     const mod = { exports: {} };
     new Function('window', 'module', 'exports', src)(win, mod, mod.exports);
     const Parser = mod.exports.TextToMarkdownParser;
-    const md = new Parser().parse(input.toString('utf8'));
+    const text = decode(input);
+    limit('lib/site/text-to-md-parser.js', 'var MAX_INPUT_CHARS = 25 * 1024 * 1024;', 25 * MB, 'text to Markdown', text.length, 'characters');
+    const md = new Parser().parse(text);
     return { text: await rawOutputGuard().finalize(md) };
   },
 
@@ -157,13 +180,17 @@ const routes = {
   'md>txt': async (input) => {
     const { win } = base();
     new Function('window', 'DOMParser', 'console', read('lib/site/md-to-text-parser.js'))(win, dom().DOMParser, quiet);
-    return { text: new win.MarkdownToTextParser().parse(input.toString('utf8')) };
+    const text = decode(input);
+    limit('lib/site/md-to-text-parser.js', 'var MAX_INPUT_CHARS = 1024 * 1024;', MB, 'Markdown to text', text.length, 'characters');
+    return { text: new win.MarkdownToTextParser().parse(text) };
   },
 
   // Markdown to a standalone HTML page. The HTML is sanitized by DOMPurify
   // in a real DOM, exactly as on the site. Remote images become links.
   'md>html': async (input, opts) => {
     const { win } = base();
+    const text = decode(input);
+    limit('lib/site/markdown-parser.js', 'var MAX_INPUT_CHARS = 1024 * 1024;', MB, 'Markdown to HTML', text.length, 'characters');
     const d = dom();
     const DOMPurify = require('dompurify')(d.window);
     if (!DOMPurify.isSupported) throw new Error('internal: the HTML sanitizer could not start');
@@ -179,7 +206,7 @@ const routes = {
     });
     const btoa = (str) => Buffer.from(str, 'binary').toString('base64');
     new Function('window', 'DOMPurify', 'btoa', 'console', read('lib/site/markdown-parser.js'))(win, DOMPurify, btoa, quiet);
-    const body = new win.MarkdownParser().parse(input.toString('utf8'));
+    const body = new win.MarkdownParser().parse(text);
     const page = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n' +
       '<meta http-equiv="Content-Security-Policy" content="' + PAGE_CSP + '">\n' +
       '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
@@ -191,7 +218,9 @@ const routes = {
   // HTML to Markdown.
   'html>md': async (input) => {
     const Parser = htmlToMdParser();
-    return { text: new Parser().parse(input.toString('utf8')) };
+    const text = decode(input);
+    limit('lib/site/html-to-md-parser.js', 'var MAX_INPUT_CHARS = 30 * 1024 * 1024;', 30 * MB, 'HTML to Markdown', text.length, 'characters');
+    return { text: new Parser().parse(text) };
   },
 
   // Word document to Markdown. Images are kept as alt text only, and the
@@ -210,6 +239,7 @@ const routes = {
     if (!win.DocxToMarkdownParser) {
       new Function('window', 'DOMParser', 'mammoth', 'console', read('lib/site/docx-to-md-parser.js'))(win, dom().DOMParser, mammoth, quiet);
     }
+    limit('lib/site/docx-to-md-parser.js', 'var MAX_INPUT_BYTES = 50 * 1024 * 1024;', 50 * MB, 'Word to Markdown', input.length, 'bytes');
     const bytes = new Uint8Array(input);
     return { text: await new win.DocxToMarkdownParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) };
   },
@@ -233,8 +263,10 @@ const routes = {
     };
     const scope = { pdfjsLib };
     new Function('window', 'console', read('lib/site/pdf-to-md-parser.js'))(scope, quiet);
+    limit('lib/site/pdf-to-md-parser.js', 'var MAX_PDF_BYTES = 50 * 1024 * 1024;', 50 * MB, 'PDF to Markdown', input.length, 'bytes');
     const bytes = new Uint8Array(input);
     const text = await new scope.PdfToMdParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    if (!text.trim()) throw new Error('no text found in this PDF (scanned pages have no text layer to read)');
     return { text };
   },
 
@@ -246,7 +278,10 @@ const routes = {
     if (!win.MarkdownBlockTokenizer) new Function('window', read('lib/site/markdown-block-tokenizer.js'))(win);
     const Parser = new Function('window', 'MarkdownBlockTokenizer', 'pdfMake', 'console',
       read('lib/site/md-to-pdf-parser.js') + '\n;return MdToPdfParser;')(win, win.MarkdownBlockTokenizer, pdfMake(), quiet);
-    const blob = await new Parser().parse(input.toString('utf8'), { fileName: opts.title || '' });
+    const text = decode(input);
+    limit('lib/site/md-to-pdf-parser.js', 'maxInputChars: 2_000_000,', 2000000, 'Markdown to PDF', text.length, 'characters');
+    limit('lib/site/md-to-pdf-parser.js', 'const MD_TO_PDF_MAX_LINES = 50_000;', 50000, 'Markdown to PDF', text.split(/\r\n?|\n/).length, 'lines');
+    const blob = await new Parser().parse(text, { fileName: opts.title || '' });
     return { bytes: Buffer.from(await blob.arrayBuffer()) };
   },
 
@@ -255,12 +290,12 @@ const routes = {
     const { win } = base();
     if (!win.MarkdownBlockTokenizer) new Function('window', read('lib/site/markdown-block-tokenizer.js'))(win);
     const docx = loadUmd('vendor/docx-9.6.1.umd.js', 'docx');
-    const Parser = new Function('window', 'docx', 'MarkdownBlockTokenizer',
-      read('lib/site/md-to-docx-parser.js') + '\n;return MdToDocxParser;')(win, docx, win.MarkdownBlockTokenizer);
-    const p = new Parser();
-    const tokens = p.tokenizer.tokenize(input.toString('utf8'));
-    p._mermaidImages = new Map();
-    return { bytes: await docx.Packer.toBuffer(p._buildDocument(tokens)) };
+    const Parser = new Function('window', 'docx', 'MarkdownBlockTokenizer', 'Blob', 'console',
+      read('lib/site/md-to-docx-parser.js') + '\n;return MdToDocxParser;')(win, docx, win.MarkdownBlockTokenizer, Blob, quiet);
+    const text = decode(input);
+    limit('lib/site/md-to-docx-parser.js', 'maxInputChars: 5_000_000,', 5000000, 'Markdown to Word', text.length, 'characters');
+    const blob = await new Parser().parse(text);
+    return { bytes: Buffer.from(await blob.arrayBuffer()) };
   },
 };
 
