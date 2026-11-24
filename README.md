@@ -11,11 +11,11 @@ Everything runs on your machine. The tool makes **no network calls**, so your
 files are never uploaded and a document cannot cause anything to be sent
 anywhere.
 
-[![npm version](https://img.shields.io/npm/v/iluvmd.svg)](https://www.npmjs.com/package/iluvmd)
+[![npm version](https://img.shields.io/npm/v/iluvmd-cli.svg)](https://www.npmjs.com/package/iluvmd-cli)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ```
-npm install -g iluvmd
+npm install -g iluvmd-cli
 iluvmd report.pdf        # writes report.md
 ```
 
@@ -55,13 +55,13 @@ Website and full guide: **[iluvmd.com/cli](https://iluvmd.com/cli)**
 You need [Node.js](https://nodejs.org) 22.22.2 or newer (or 24.15 or newer).
 
 ```
-npm install -g iluvmd
+npm install -g iluvmd-cli
 ```
 
 Or run it once without installing:
 
 ```
-npx iluvmd report.pdf
+npx iluvmd-cli report.pdf
 ```
 
 Check it works:

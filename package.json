@@ -1,5 +1,5 @@
 {
-  "name": "iluvmd",
+  "name": "iluvmd-cli",
   "version": "0.1.0",
   "description": "Convert PDF, Word, HTML and text to Markdown, and Markdown to Word, PDF and HTML, from the command line. Runs on your machine: no uploads, no network calls.",
   "license": "MIT",
