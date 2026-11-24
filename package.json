@@ -19,10 +19,12 @@
     "src/",
     "lib/",
     "vendor/",
+    "licenses/",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "README.md",
-    "npm-shrinkwrap.json"
+    "npm-shrinkwrap.json",
+    "SECURITY.md"
   ],
   "scripts": {
     "test": "node test/run-all.js",
