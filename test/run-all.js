@@ -293,6 +293,68 @@ if (process.platform !== 'win32') {
   }
 }
 
+// --- share-style addresses in every spelling ---------------------------------
+file('shares.md', ['![a](////evil.example/share/a.png)', '', '![b][ref]', '',
+  '<img src="/..//evil.example/s/a.png"> <img src="/.//evil.example/b.png"> <img src="/%2e%2e//evil.example/c.png">',
+  '<input type="image" src="////evil.example/i.png"> <img src="/\\evil.example/d.png"> <img src="pics/ok.png" alt="ok">', '',
+  '[ref]: ////evil.example/a.png', ''].join('\n'));
+r = run(['shares.md', '--to', 'html', '-o', '-']);
+ok('md>html drops every share-style image address', r.code === 0 && !r.out.includes('evil.example') && r.out.includes('src="pics/ok.png"'), r.out);
+file('shares.html', '<a href="/\\evil.example/share/x">a</a> <img src="/\\evil.example/a.png" alt="i"> <a href="////evil.example/x">b</a>');
+r = run(['shares.html', '-o', '-']);
+ok('html>md tames slash and backslash share targets', r.code === 0 && !/\]\(\s*<?[\\/]{2}/.test(r.out) && !/\]\(\s*<?\/\\/.test(r.out), r.out);
+file('code.html', '<pre>foo](\\d+) bar</pre>');
+r = run(['code.html', '-o', '-']);
+ok('html>md leaves a single backslash in code alone', r.code === 0 && r.out.includes('foo](\\d+) bar'), r.out);
+file('many.html', '<pre>' + '](\\\\'.repeat(100000) + '</pre><p>x](' + ' '.repeat(100000) + '</p>');
+let t0 = Date.now();
+r = run(['many.html', '-o', '-']);
+ok('html>md target rewrite stays fast on repeated openers', r.code === 0 && Date.now() - t0 < 15000, (Date.now() - t0) + ' ms');
+
+// --- results that would be cut short are errors -------------------------------
+file('amp.md', '[r]: http://x/' + 'a'.repeat(2000) + '\n\n' + '[a][r] '.repeat(5000));
+r = run(['amp.md', '--to', 'txt']);
+ok('md>txt over its output limit fails and writes nothing', r.code === 1 && /output limit/.test(r.err) && !fs.existsSync(path.join(dir, 'amp.txt')), r.err);
+file('deep.html', '<p>before</p>' + '<div>'.repeat(20000) + '<p>after</p>');
+r = run(['deep.html']);
+ok('html>md that cannot be converted fails and writes nothing', r.code === 1 && !fs.existsSync(path.join(dir, 'deep.md')), r.err);
+
+// --- output files and folders ---------------------------------------------------
+if (process.platform !== 'win32') {
+  file('mode.txt', 'new\n');
+  file('mode.md', 'old\n');
+  fs.chmodSync(path.join(dir, 'mode.md'), 0o600);
+  r = run(['mode.txt', '--force']);
+  ok('--force keeps the permissions of the file it replaces', r.code === 0 && (fs.statSync(path.join(dir, 'mode.md')).mode & 0o777) === 0o600, r.err);
+  fs.mkdirSync(path.join(dir, 'lin', 'sub', 'deeper'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'lout'));
+  fs.mkdirSync(path.join(dir, 'lelse'));
+  file('lin/sub/deeper/f.txt', 'x\n');
+  fs.symlinkSync(path.join(dir, 'lelse'), path.join(dir, 'lout', 'sub'));
+  r = run(['lin', '-r', '-o', 'lout']);
+  ok('a linked output subfolder is refused and nothing is created behind it', r.code === 1 && fs.readdirSync(path.join(dir, 'lelse')).length === 0, r.err);
+}
+if (process.platform === 'darwin') {
+  fs.mkdirSync(path.join(dir, 'nf'));
+  const name = 'caf' + cp(0xE9);
+  file('nf/' + name.normalize('NFC') + '.txt', 'a\n');
+  file('nf/' + name.normalize('NFD') + '.html', '<p>b</p>');
+  if (fs.readdirSync(path.join(dir, 'nf')).length === 2) {
+    r = run(['nf']);
+    ok('two spellings of one output name are refused before writing', r.code === 2 && fs.readdirSync(path.join(dir, 'nf')).length === 2, r.err);
+  }
+}
+let sepOk = true;
+const sepName = 'x' + cp(0x2028) + 'y.xlsx';
+try { file(sepName, ''); } catch (e) { sepOk = false; }
+if (sepOk) {
+  r = run([sepName, '--json']);
+  ok('--json escapes line separator characters', !r.out.includes(cp(0x2028)) && JSON.parse(r.out.trim()).input === sepName, r.out);
+  r = run([sepName]);
+  ok('messages hold no line separator characters', !r.err.includes(cp(0x2028)), r.err);
+}
+
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -105,14 +105,19 @@ function writeOutput(target, data, force) {
   const dest = force ? target + '.' + process.pid + '-' + Date.now().toString(36) + '.iluvmd-tmp' : target;
   let fd;
   try {
-    fd = fs.openSync(dest, c.O_WRONLY | c.O_CREAT | c.O_EXCL | NOFOLLOW, 0o644);
+    // A file that replaces an existing one starts private and then takes
+    // the old file's permissions.
+    fd = fs.openSync(dest, c.O_WRONLY | c.O_CREAT | c.O_EXCL | NOFOLLOW, st ? 0o600 : 0o644);
   } catch (e) {
     if (e.code === 'EEXIST') throw new Error('output exists (use --force to replace): ' + target);
     if (e.code === 'ELOOP') throw new Error('output is a symbolic link, not written: ' + target);
     throw new Error('cannot write ' + target + ': ' + e.code);
   }
   try {
-    try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); }
+    try {
+      fs.writeFileSync(fd, data);
+      if (st) fs.fchmodSync(fd, st.mode & 0o7777);
+    } finally { fs.closeSync(fd); }
     if (force) fs.renameSync(dest, target);
   } catch (e) {
     try { fs.unlinkSync(dest); } catch (e2) { /* nothing to remove */ }
@@ -145,14 +150,24 @@ function listFolder(root, toKind, recursive, problems) {
   return found;
 }
 
-// Creates (if needed) and returns a subfolder of the output folder, and
-// refuses one that resolves to a place outside it.
+// Creates (if needed) and returns a subfolder of the output folder, one
+// level at a time. A level that is a symbolic link or not a folder is
+// refused before anything is created below it, so nothing lands outside
+// the output folder.
 function subfolder(outRoot, rel) {
-  if (!rel) return outRoot;
-  const dir = path.join(outRoot, rel);
-  fs.mkdirSync(dir, { recursive: true });
-  const back = path.relative(fs.realpathSync(outRoot), fs.realpathSync(dir));
-  if (back.startsWith('..') || path.isAbsolute(back)) throw new Error('output folder leaves ' + outRoot + ': ' + dir);
+  let dir = outRoot;
+  for (const part of rel.split(path.sep)) {
+    if (!part) continue;
+    if (part === '..') throw new Error('output folder leaves ' + outRoot);
+    dir = path.join(dir, part);
+    let st = null;
+    try { st = fs.lstatSync(dir); } catch (e) { /* does not exist yet */ }
+    if (!st) {
+      try { fs.mkdirSync(dir); } catch (e) { if (e.code !== 'EEXIST') throw new Error('cannot create folder ' + dir + ': ' + e.code); }
+      st = fs.lstatSync(dir);
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('output folder is a symbolic link or not a folder: ' + dir);
+  }
   return dir;
 }
 
@@ -183,7 +198,18 @@ function readInput(file, noFollow) {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new Error('not a file');
     if (st.size > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB');
-    return fs.readFileSync(fd);
+    // The file can grow while it is read, so the limit is kept here too.
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(Math.max(st.size - total, 0) + 65536, 8 * 1024 * 1024));
+      const n = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (!n) break;
+      total += n;
+      if (total > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB');
+      chunks.push(chunk.subarray(0, n));
+    }
+    return Buffer.concat(chunks, total);
   } finally { fs.closeSync(fd); }
 }
 
@@ -193,7 +219,9 @@ function fileKey(p) {
   try { full = fs.realpathSync(full); } catch (e) {
     try { full = path.join(fs.realpathSync(path.dirname(full)), path.basename(full)); } catch (e2) { /* keep as is */ }
   }
-  return process.platform === 'darwin' || process.platform === 'win32' ? full.toLowerCase() : full;
+  // macOS also treats two spellings of one accented name as the same file.
+  if (process.platform === 'darwin') return full.normalize('NFC').toLowerCase();
+  return process.platform === 'win32' ? full.toLowerCase() : full;
 }
 
 async function main(argv) {

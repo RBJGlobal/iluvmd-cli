@@ -54,8 +54,12 @@ function stripHidden(text) {
 
 // One line for a message: clean, and no line breaks (a file name can hold
 // them, and could otherwise fake a second message).
+// The line and paragraph separators count as line breaks to some readers.
+const isSeparator = (cp) => cp === 0x2028 || cp === 0x2029;
+
 function oneLine(text) {
-  return clean(text).split(String.fromCharCode(10)).join(' ');
+  return clean(text).split(String.fromCharCode(10)).join(' ')
+    .split(String.fromCodePoint(0x2028)).join(' ').split(String.fromCodePoint(0x2029)).join(' ');
 }
 
 // JSON text with every unsafe character written as an escape, so a result
@@ -68,7 +72,7 @@ function safeJson(value) {
     const cp = json.codePointAt(i);
     const len = cp > 0xFFFF ? 2 : 1;
     const loneSurrogate = len === 1 && cp >= 0xD800 && cp <= 0xDFFF;
-    if (isUnsafe(cp) || loneSurrogate) {
+    if (isUnsafe(cp) || isSeparator(cp) || loneSurrogate) {
       for (let k = 0; k < len; k++) out += String.fromCharCode(92) + 'u' + json.charCodeAt(i + k).toString(16).padStart(4, '0');
     } else out += json.slice(i, i + len);
     i += len;

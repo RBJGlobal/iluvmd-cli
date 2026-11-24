@@ -79,7 +79,15 @@ function dom() {
 function htmlToMdParser() {
   const { win } = base();
   if (!win.HtmlToMarkdownParser) {
-    new Function('window', 'DOMParser', 'console', read('lib/site/html-to-md-parser.js'))(win, dom().DOMParser, quiet);
+    // On the site this converter never throws: over its limit it returns a
+    // notice, and on a failure (for example nesting too deep) it returns
+    // nothing. Written to a file, both would look like a result, so here
+    // they are errors. This also covers the HTML a Word file expands to.
+    let src = read('lib/site/html-to-md-parser.js');
+    src = patchOnce(src, "return 'This HTML is over the '", "throw new Error('the content is over the 30 MB limit for conversion to Markdown'); return 'This HTML is over the '", 'HTML limit notice');
+    src = patchOnce(src, "return this.cleanMarkdown(md);\n            } catch (e) {\n                return '';",
+      "return this.cleanMarkdown(md);\n            } catch (e) {\n                throw new Error('the HTML could not be converted (it may be nested too deeply)');", 'HTML failure');
+    new Function('window', 'DOMParser', 'console', src)(win, dom().DOMParser, quiet);
   }
   return win.HtmlToMarkdownParser;
 }
@@ -90,13 +98,15 @@ const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
 // a local file. Resolved the way a browser does it, so tabs, control
 // characters, backslashes and "//host" forms cannot hide a remote host.
 // 'local' is a data: address or a file on this machine; 'web' is http(s);
-// anything else (another scheme, or a file address naming a host, which is
-// a network share) is 'other'.
+// anything else (another scheme, or a file address that names a host or
+// could be read as one, which is a network share) is 'other'.
 function addressKind(value) {
   let u;
   try { u = new URL(String(value), 'file:///x/y'); } catch (e) { return 'other'; }
   if (u.protocol === 'data:') return 'local';
-  if (u.protocol === 'file:') return u.host === '' ? 'local' : 'other';
+  // A path with an empty segment ("//host/share", however it was spelled)
+  // can be read as a network share, so it is not local either.
+  if (u.protocol === 'file:') return u.host === '' && !u.pathname.includes('//') ? 'local' : 'other';
   if (u.protocol === 'http:' || u.protocol === 'https:') return 'web';
   return 'other';
 }
@@ -197,12 +207,15 @@ function pdfMake() {
   return lib;
 }
 
-// In Markdown made from HTML or Word, a link or image target of the form
-// "//host/..." would be read as a network share by a viewer showing a local
-// file. Those become https addresses, and backslash-led targets lose their
-// link.
+// In Markdown made from HTML or Word, a link or image target that starts
+// with two slashes or backslashes ("//host/...", "/\host", "\\host") would
+// be read as a network share by a viewer showing a local file. Slash-only
+// forms become https addresses; forms with a backslash become a "#" target
+// that goes nowhere. Code is not skipped: deciding what is code differently
+// from a viewer would reopen the hole. Each pattern scans in linear time.
 function tameTargets(md) {
-  return md.replace(/\]\(\s*<?\s*\/\//g, '](https://').replace(/\]\(\s*<?\s*\\[^)\n]*\)/g, ']');
+  return md.replace(/\]\([ \t\r\n]*(<[ \t]*)?([\\/]{2,})/g,
+    (all, open, lead) => '](' + (open ? '<' : '') + (lead.includes('\\') ? '#' : 'https://'));
 }
 
 const routes = {
@@ -224,7 +237,10 @@ const routes = {
   // Markdown to plain text.
   'md>txt': async (input) => {
     const { win } = base();
-    new Function('window', 'DOMParser', 'console', read('lib/site/md-to-text-parser.js'))(win, dom().DOMParser, quiet);
+    // Over its output limit the site converter cuts the text short; here that is an error.
+    const src = patchOnce(read('lib/site/md-to-text-parser.js'), 'out = out.slice(0, MAX_OUTPUT_CHARS);',
+      "throw new Error('the result is over the Markdown to text output limit');", 'text output limit');
+    new Function('window', 'DOMParser', 'console', src)(win, dom().DOMParser, quiet);
     const text = decode(input);
     limit('lib/site/md-to-text-parser.js', 'var MAX_INPUT_CHARS = 1024 * 1024;', MB, 'Markdown to text', text.length, 'characters');
     return { text: new win.MarkdownToTextParser().parse(text) };
@@ -299,7 +315,10 @@ const routes = {
       }),
     };
     const scope = { pdfjsLib };
-    new Function('window', 'console', read('lib/site/pdf-to-md-parser.js'))(scope, quiet);
+    // Over its output limit the site converter stops and adds a note; here that is an error.
+    const src = patchOnce(read('lib/site/pdf-to-md-parser.js'), 'if (budget.truncated) {',
+      "if (budget.truncated) { throw new Error('this PDF holds more text than the converter handles'); }\n            if (false) {", 'PDF output limit');
+    new Function('window', 'console', src)(scope, quiet);
     limit('lib/site/pdf-to-md-parser.js', 'var MAX_PDF_BYTES = 50 * 1024 * 1024;', 50 * MB, 'PDF to Markdown', input.length, 'bytes');
     const bytes = new Uint8Array(input);
     const text = await new scope.PdfToMdParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
