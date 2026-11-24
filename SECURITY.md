@@ -26,12 +26,15 @@ are treated as security problems:
 
 - Network functions (`fetch`, sockets, `http`, `https`, `dns` and the rest)
   are replaced with functions that throw, in the main process and in every
-  conversion thread.
-- Each conversion runs in a worker thread with a heap limit and a timeout.
+  conversion process.
+- Each conversion runs in its own process, in a worker thread with a heap
+  limit and a timeout, while the process watches its total memory.
 - HTML and XML are parsed in a DOM where scripts never run and no resource is
   loaded.
 - The PDF reader runs with code generation from file contents switched off.
 - The PDF writer is denied both remote addresses and local files.
+- HTML output keeps no attribute that loads from another machine, including
+  addresses that name a network share.
 - The package has no install scripts, and its dependencies are pinned to
   exact versions in `npm-shrinkwrap.json`.
 

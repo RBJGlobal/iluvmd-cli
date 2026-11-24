@@ -213,19 +213,22 @@ The tool is built to be run on files you did not write.
 
 - **No network.** Every way to open a connection is replaced with a function
   that fails: `fetch`, sockets, `http`, `https`, `dns` and the rest, in the
-  main process and in each conversion thread.
-- **Limits on every file.** Each file is converted in a separate thread with
-  a memory cap and a time limit.
+  main process and in each conversion process.
+- **Limits on every file.** Each file is converted in its own process with a
+  memory cap and a time limit. A file built to exhaust memory fails by
+  itself and the rest of the batch continues.
 - **Careful with your disk.** Output is never replaced without `--force`. A
   symbolic link at the output path is refused, not followed. Folder output
   stays inside the output folder.
 - **No reading beyond the input.** A document cannot make the tool read
   other files: links to external files in Word documents are not followed,
   and HTML is parsed without loading anything it refers to.
-- **Safe output.** HTML output is sanitized, carries a Content Security
-  Policy that allows no scripts, and turns remote images into plain links,
-  so opening the page contacts nobody. PDF output is checked for automatic
-  actions before it is written.
+- **Safe output.** HTML output is sanitized and carries a Content Security
+  Policy that allows no scripts. Nothing in the page loads from another
+  machine: remote images become plain links, so opening the page contacts
+  nobody. PDF output is checked for automatic actions before it is written.
+- **No hidden text.** Invisible Unicode tag characters, which can carry text
+  a person cannot see, are removed from every text result.
 - **Pinned parts.** The package has no install scripts. Its dependencies are
   pinned to exact versions, and every bundled converter file is listed with
   its SHA-256 hash in `lib/MANIFEST.sha256`.

@@ -86,14 +86,51 @@ function htmlToMdParser() {
 
 const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-// True for an image address that would be fetched from somewhere else when
-// the page is opened: anything with a scheme other than data:, or a
-// protocol-relative address. Relative paths to local files are kept.
-function isRemoteSrc(src) {
-  const v = String(src).trim().replace(/[\\]/g, '/');
-  if (v.startsWith('//')) return true;
-  const m = /^([a-z][a-z0-9+.-]*):/i.exec(v);
-  return !!m && m[1].toLowerCase() !== 'data';
+// What an address in the page would load from when the page is opened from
+// a local file. Resolved the way a browser does it, so tabs, control
+// characters, backslashes and "//host" forms cannot hide a remote host.
+// 'local' is a data: address or a file on this machine; 'web' is http(s);
+// anything else (another scheme, or a file address naming a host, which is
+// a network share) is 'other'.
+function addressKind(value) {
+  let u;
+  try { u = new URL(String(value), 'file:///x/y'); } catch (e) { return 'other'; }
+  if (u.protocol === 'data:') return 'local';
+  if (u.protocol === 'file:') return u.host === '' ? 'local' : 'other';
+  if (u.protocol === 'http:' || u.protocol === 'https:') return 'web';
+  return 'other';
+}
+
+// Attributes that make a browser load something without a click.
+const LOADING_ATTRS = ['srcset', 'poster', 'background', 'ping', 'lowsrc', 'dynsrc', 'data', 'action', 'formaction', 'manifest'];
+
+// Runs on every element after sanitizing: nothing may be left that loads
+// from another machine when the page is opened.
+function stripRemoteLoads(node) {
+  if (!node || typeof node.getAttribute !== 'function') return;
+  for (const name of LOADING_ATTRS) if (node.hasAttribute(name)) node.removeAttribute(name);
+  // A style attribute can load an image; only plain declarations are kept.
+  const style = node.getAttribute('style');
+  if (style != null && /[(\\@]/.test(style)) node.removeAttribute('style');
+  for (const name of ['href', 'xlink:href']) {
+    if (node.tagName !== 'A' && node.tagName !== 'AREA' && node.hasAttribute(name) && !String(node.getAttribute(name)).startsWith('#')) node.removeAttribute(name);
+  }
+  if (!node.hasAttribute('src')) return;
+  const src = node.getAttribute('src');
+  const kind = addressKind(src);
+  if (kind === 'local') return;
+  if (node.tagName !== 'IMG') { node.removeAttribute('src'); return; }
+  // A remote image becomes a link (web addresses) or its alt text.
+  const doc = node.ownerDocument;
+  const label = node.getAttribute('alt') || (kind === 'web' ? src : 'image');
+  let swap = doc.createTextNode(label);
+  if (kind === 'web') {
+    swap = doc.createElement('a');
+    swap.setAttribute('href', new URL(src, 'file:///x/y').href);
+    swap.setAttribute('rel', 'noopener noreferrer');
+    swap.textContent = label;
+  }
+  if (node.parentNode) node.parentNode.replaceChild(swap, node);
 }
 
 // The page allows no scripts, no network and no remote images.
@@ -160,6 +197,14 @@ function pdfMake() {
   return lib;
 }
 
+// In Markdown made from HTML or Word, a link or image target of the form
+// "//host/..." would be read as a network share by a viewer showing a local
+// file. Those become https addresses, and backslash-led targets lose their
+// link.
+function tameTargets(md) {
+  return md.replace(/\]\(\s*<?\s*\/\//g, '](https://').replace(/\]\(\s*<?\s*\\[^)\n]*\)/g, ']');
+}
+
 const routes = {
   // Plain text to Markdown.
   'txt>md': async (input) => {
@@ -194,21 +239,13 @@ const routes = {
     const d = dom();
     const DOMPurify = require('dompurify')(d.window);
     if (!DOMPurify.isSupported) throw new Error('internal: the HTML sanitizer could not start');
-    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-      if (node.tagName !== 'IMG') return;
-      const src = node.getAttribute('src') || '';
-      if (!isRemoteSrc(src)) return;
-      const link = node.ownerDocument.createElement('a');
-      link.setAttribute('href', src);
-      link.setAttribute('rel', 'noopener noreferrer');
-      link.textContent = node.getAttribute('alt') || src;
-      if (node.parentNode) node.parentNode.replaceChild(link, node);
-    });
+    DOMPurify.addHook('afterSanitizeAttributes', stripRemoteLoads);
     const btoa = (str) => Buffer.from(str, 'binary').toString('base64');
     new Function('window', 'DOMPurify', 'btoa', 'console', read('lib/site/markdown-parser.js'))(win, DOMPurify, btoa, quiet);
     const body = new win.MarkdownParser().parse(text);
     const page = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n' +
       '<meta http-equiv="Content-Security-Policy" content="' + PAGE_CSP + '">\n' +
+      '<meta http-equiv="x-dns-prefetch-control" content="off">\n<meta name="referrer" content="no-referrer">\n' +
       '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
       '<title>' + escapeHtml(opts.title || 'Document') + '</title>\n<style>' + PAGE_CSS + '</style>\n</head>\n<body>\n' +
       body + '\n</body>\n</html>\n';
@@ -220,7 +257,7 @@ const routes = {
     const Parser = htmlToMdParser();
     const text = decode(input);
     limit('lib/site/html-to-md-parser.js', 'var MAX_INPUT_CHARS = 30 * 1024 * 1024;', 30 * MB, 'HTML to Markdown', text.length, 'characters');
-    return { text: new Parser().parse(text) };
+    return { text: tameTargets(new Parser().parse(text)) };
   },
 
   // Word document to Markdown. Images are kept as alt text only, and the
@@ -241,7 +278,7 @@ const routes = {
     }
     limit('lib/site/docx-to-md-parser.js', 'var MAX_INPUT_BYTES = 50 * 1024 * 1024;', 50 * MB, 'Word to Markdown', input.length, 'bytes');
     const bytes = new Uint8Array(input);
-    return { text: await new win.DocxToMarkdownParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) };
+    return { text: tameTargets(await new win.DocxToMarkdownParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))) };
   },
 
   // PDF to Markdown: the text layer only (no OCR). The PDF library runs in

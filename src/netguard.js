@@ -24,6 +24,7 @@ function install() {
   set(tls, 'connect', 'tls.connect');
   const dgram = require('dgram');
   set(dgram, 'createSocket', 'dgram.createSocket');
+  for (const key of ['send', 'connect', 'bind']) set(dgram.Socket.prototype, key, 'dgram.' + key);
   for (const mod of ['http', 'https']) {
     const m = require(mod);
     set(m, 'request', mod + '.request');
@@ -34,6 +35,13 @@ function install() {
   for (const key of Object.keys(dns)) {
     if (typeof dns[key] === 'function' && /^(lookup|resolve|reverse)/.test(key)) set(dns, key, 'dns.' + key);
   }
+  for (const R of [dns.Resolver, dns.promises && dns.promises.Resolver]) {
+    if (!R || !R.prototype) continue;
+    for (const key of Object.getOwnPropertyNames(R.prototype)) {
+      if (typeof R.prototype[key] === 'function' && /^(resolve|reverse)/.test(key)) set(R.prototype, key, 'dns.' + key);
+    }
+  }
+  if (typeof process.binding === 'function') set(process, 'binding', 'process.binding');
   if (dns.promises) {
     for (const key of Object.keys(dns.promises)) {
       if (typeof dns.promises[key] === 'function' && /^(lookup|resolve|reverse)/.test(key)) set(dns.promises, key, 'dns.' + key);

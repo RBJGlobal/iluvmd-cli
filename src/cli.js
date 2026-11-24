@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { clean } = require('./sanitize');
+const { clean, stripHidden, oneLine, safeJson } = require('./sanitize');
 const { runConversion, DEFAULT_TIMEOUT_MS } = require('./run');
 const { routes } = require('./engine');
 
@@ -91,10 +91,6 @@ function parseArgs(argv) {
 function isDir(p) {
   try { return fs.statSync(p).isDirectory(); } catch (e) { return false; }
 }
-function isLink(p) {
-  try { return fs.lstatSync(p).isSymbolicLink(); } catch (e) { return false; }
-}
-
 // Never follows a symbolic link at the target, and never replaces a file
 // unless --force was given. With --force the new file is written beside the
 // target and moved into place, so a failed write leaves the old file whole.
@@ -102,7 +98,10 @@ function writeOutput(target, data, force) {
   const c = fs.constants;
   // O_NOFOLLOW does not exist on Windows, so the link is also checked here.
   const NOFOLLOW = c.O_NOFOLLOW || 0;
-  if (isLink(target)) throw new Error('output is a symbolic link, not written: ' + target);
+  let st = null;
+  try { st = fs.lstatSync(target); } catch (e) { /* does not exist yet */ }
+  if (st && st.isSymbolicLink()) throw new Error('output is a symbolic link, not written: ' + target);
+  if (st && !st.isFile()) throw new Error('output exists and is not a regular file: ' + target);
   const dest = force ? target + '.' + process.pid + '-' + Date.now().toString(36) + '.iluvmd-tmp' : target;
   let fd;
   try {
@@ -171,12 +170,21 @@ function readStdin() {
   });
 }
 
-function readInput(file) {
-  let st;
-  try { st = fs.statSync(file); } catch (e) { throw new Error('cannot read file: ' + e.code); }
-  if (!st.isFile()) throw new Error('not a file');
-  if (st.size > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB');
-  return fs.readFileSync(file);
+// Reads through one open handle, so the file that was checked is the file
+// that is read. A file found by walking a folder must not be a symbolic
+// link, even if it was swapped for one after the walk.
+function readInput(file, noFollow) {
+  const c = fs.constants;
+  let fd;
+  try { fd = fs.openSync(file, c.O_RDONLY | (noFollow ? (c.O_NOFOLLOW || 0) : 0) | (c.O_NONBLOCK || 0)); } catch (e) {
+    throw new Error(e.code === 'ELOOP' ? 'is a symbolic link, skipped' : 'cannot read file: ' + e.code);
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a file');
+    if (st.size > MAX_INPUT_BYTES) throw new Error('file is larger than 100 MB');
+    return fs.readFileSync(fd);
+  } finally { fs.closeSync(fd); }
 }
 
 // Two paths that name the same file on this system.
@@ -189,7 +197,7 @@ function fileKey(p) {
 }
 
 async function main(argv) {
-  const err = (msg) => process.stderr.write(clean('iluvmd: ' + msg) + '\n');
+  const err = (msg) => process.stderr.write(oneLine('iluvmd: ' + msg) + '\n');
   let o;
   try { o = parseArgs(argv); } catch (e) {
     if (e instanceof UsageError) { err(e.message + ' (see iluvmd --help)'); return EXIT.USAGE; }
@@ -279,10 +287,11 @@ async function main(argv) {
     const result = { input: job.name, output: null, ok: false };
     try {
       if (job.error) { if (job.unsupported) unsupported++; throw new Error(job.error); }
-      const data = job.input === '-' ? await readStdin() : readInput(job.input);
+      const data = job.input === '-' ? await readStdin() : readInput(job.input, job.fromFolder);
       const out = await runConversion(job.route, data, { timeoutMs: o.timeoutMs, title: job.title });
       // Text output always ends with a newline.
-      const payload = out.bytes ? out.bytes : (out.text.endsWith('\n') ? out.text : out.text + '\n');
+      const text = out.bytes ? null : stripHidden(out.text);
+      const payload = out.bytes ? out.bytes : (text.endsWith('\n') ? text : text + '\n');
       if (toStdout) {
         process.stdout.write(out.bytes || o.raw ? payload : clean(payload));
         result.output = '(stdout)';
@@ -296,9 +305,9 @@ async function main(argv) {
       result.error = clean(String((e && e.message) || e));
       failed++;
     }
-    if (o.json) process.stdout.write(JSON.stringify(result) + '\n');
+    if (o.json) process.stdout.write(safeJson(result) + '\n');
     else if (!result.ok) err(result.input + ': ' + result.error);
-    else if (!toStdout) process.stderr.write(clean(result.input + ' -> ' + result.output) + '\n');
+    else if (!toStdout) process.stderr.write(oneLine(result.input + ' -> ' + result.output) + '\n');
   }
   if (!failed) return EXIT.OK;
   return unsupported === failed ? EXIT.UNSUPPORTED : EXIT.FAILED;

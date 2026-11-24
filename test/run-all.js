@@ -250,6 +250,49 @@ ok('md>docx through the public entry point', r.code === 0 && fs.readFileSync(pat
 r = spawnSync(process.execPath, [BIN, 'report.pdf', '--from', 'pdf', '-o', '-'], { cwd: dir, encoding: 'utf8' });
 ok('pdf>md table text survives a round trip', r.status === 0 && /Report/.test(r.stdout) && /bold/.test(r.stdout), r.stderr);
 
+// --- HTML output loads nothing from another machine --------------------------
+file('loads.md', [
+  '![ok](local.png)', '![web](https://example.com/a.png)',
+  '<img src="/' + cp(9) + '/evil.example/a.png" alt="tabbed">',
+  '<img src="' + cp(1) + '//evil.example/b.png">',
+  '<img src="x.png" srcset="//evil.example/d.png 1x">',
+  '<picture><source srcset="//evil.example/e.png"><img src="y.png"></picture>',
+  '<video poster="//evil.example/g.png"></video>',
+  '<input type="image" src="//evil.example/i.png">',
+  '<table background="//evil.example/h.png"><tr><td>cell</td></tr></table>',
+  '<p style="background:url(//evil.example/s.png)">styled</p>',
+  '<img src="file://evil.example/share/u.png">', ''].join('\n\n'));
+r = run(['loads.md', '--to', 'html', '-o', '-']);
+const body = r.out.slice(r.out.indexOf('<body>'));
+ok('md>html keeps a local image', r.code === 0 && /<img[^>]+src="local\.png"/.test(body), body);
+ok('md>html turns a web image into a link', /<a href="https:\/\/example\.com\/a\.png"/.test(body) && !/<img[^>]+example\.com/.test(body), body);
+ok('md>html leaves nothing that loads from another host',
+  !/(src|srcset|poster|background)\s*=\s*"[^"]*evil\.example/.test(body) && !/url\(/.test(body), body);
+ok('md>html makes no link to a network share', !/href="(file:)?\/\/evil\.example/.test(body), body);
+
+// --- names and results cannot smuggle characters -----------------------------
+const odd = 'x' + cp(0x202E) + 'gpj' + cp(0x9B) + '31m' + cp(0xE0041) + '.txt';
+let oddOk = true;
+try { file(odd, 'odd\n'); } catch (e) { oddOk = false; }
+if (oddOk) {
+  r = run([odd, '--json']);
+  ok('--json escapes unsafe characters in names', r.code === 0 && !/[\u0080-\u009f‮]/.test(r.out) && !r.out.includes(cp(0xE0041)) && JSON.parse(r.out.trim()).input === odd, r.out);
+}
+file('hidden.txt', 'Visible' + cp(0xE0049, 0xE0047) + ' text ' + cp(0xE0101) + 'end\n');
+r = run(['hidden.txt']);
+ok('hidden tag characters are not written to files', r.code === 0 && readOut('hidden.md').trim() === 'Visible text end', readOut('hidden.md'));
+file('share.html', '<p><a href="//evil.example/x">a</a> <img src="//evil.example/p.png" alt="p"> <a href="\\\\evil.example\\share">s</a></p>');
+r = run(['share.html', '-o', '-']);
+ok('html>md has no share-style targets', r.code === 0 && !/\]\(\s*<?(\/\/|\\)/.test(r.out), r.out);
+if (process.platform !== 'win32') {
+  file('pipe-src.txt', 'data\n');
+  spawnSync('mkfifo', [path.join(dir, 'pipe-src.md')]);
+  if (fs.existsSync(path.join(dir, 'pipe-src.md'))) {
+    const p = spawnSync(process.execPath, [BIN, 'pipe-src.txt', '--force'], { cwd: dir, encoding: 'utf8', timeout: 15000 });
+    ok('--force refuses a target that is not a regular file', p.status === 1 && /not a regular file/.test(p.stderr), p.stderr || 'hung');
+  }
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
