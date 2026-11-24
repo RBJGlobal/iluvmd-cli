@@ -1,9 +1,9 @@
 {
   "name": "iluvmd",
   "version": "0.1.0",
-  "description": "Convert documents to Markdown and Markdown to documents, on your own machine. No uploads, no network calls.",
+  "description": "Convert PDF, Word, HTML and text to Markdown, and Markdown to Word, PDF and HTML, from the command line. Runs on your machine: no uploads, no network calls.",
   "license": "MIT",
-  "homepage": "https://iluvmd.com",
+  "homepage": "https://iluvmd.com/cli",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RBJGlobal/ilovemd-cli.git"
@@ -34,5 +34,28 @@
     "dompurify": "3.2.7",
     "jsdom": "30.1.3",
     "mammoth": "1.11.0"
+  },
+  "keywords": [
+    "markdown",
+    "converter",
+    "cli",
+    "pdf-to-markdown",
+    "docx-to-markdown",
+    "html-to-markdown",
+    "markdown-to-pdf",
+    "markdown-to-docx",
+    "markdown-to-html",
+    "pdf",
+    "docx",
+    "word",
+    "html",
+    "llm",
+    "rag",
+    "document-conversion",
+    "offline",
+    "privacy"
+  ],
+  "bugs": {
+    "url": "https://github.com/RBJGlobal/ilovemd-cli/issues"
   }
 }
