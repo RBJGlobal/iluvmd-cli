@@ -122,7 +122,7 @@ ok('md>txt keeps text inside raw HTML', r.code === 0 && /inside html/.test(r.out
 ok('no input is a usage error', run([]).code === 2);
 ok('unknown option is a usage error', run(['--nope']).code === 2);
 ok('markdown without --to is a usage error', run(['doc.md']).code === 2);
-ok('unsupported type exits 3', run(['x.pdf']).code === 3);
+ok('unsupported type exits 3', run(['x.xlsx']).code === 3);
 ok('missing file exits 1', run(['missing.txt']).code === 1);
 file('-dash.txt', 'TITLE\n');
 ok('file name starting with a dash after --', run(['--', '-dash.txt']).code === 0 && fs.existsSync(path.join(dir, '-dash.md')));
@@ -157,6 +157,21 @@ ok('md>pdf is a PDF', pdf.slice(0, 5).toString('latin1') === '%PDF-' && pdf.leng
 ok('md>pdf carries no automatic action', !/\/(OpenAction|AA|JS|JavaScript|Launch)\b/.test(pdf.toString('latin1')));
 r = run(['report.md', '--to', 'pdf']);
 ok('md>pdf does not replace an existing file', r.code === 1 && /exists/.test(r.err), r.err);
+
+// --- PDF to Markdown --------------------------------------------------------
+fs.copyFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'), path.join(dir, 'paper.pdf'));
+r = run(['paper.pdf']);
+ok('pdf>md exits 0', r.code === 0, r.err);
+md = readOut('paper.md');
+ok('pdf>md heading and text', /^# Quarterly Report$/m.test(md) && md.includes('Plain appendix text.'), md);
+ok('pdf>md leaves no tag-like "<"', !/<(?=[A-Za-z\/!?])/.test(md), md);
+ok('pdf>md prints nothing on standard output', r.out === '', r.out);
+file('broken.pdf', 'this is not a PDF');
+r = run(['broken.pdf']);
+ok('pdf>md reports a broken file', r.code === 1 && r.err.length > 0 && !fs.existsSync(path.join(dir, 'broken.md')), r.err);
+fs.copyFileSync(path.join(dir, 'report.pdf'), path.join(dir, 'round.pdf'));
+r = run(['round.pdf']);
+ok('pdf>md reads a PDF this tool wrote', r.code === 0 && /Report/.test(readOut('round.md')), r.err);
 
 // --- second check of raw Markdown output ------------------------------------
 file('tags.txt', 'A line with <script>alert(1)</script> in it.\n\n<img src=x onerror=alert(1)>\n');

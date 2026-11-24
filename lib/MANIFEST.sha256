@@ -6,6 +6,7 @@ d960090a416f4310617f435fbc0a4a9d0913a631595a5bd353edf15a56a750c2  lib/site/text-
 95de06854987e91511de7c0372f8cfc8845fad4cfa519fb5e40fc54909ca83b9  lib/site/html-to-md-parser.js
 da6a956f1ac9c35dd7b178625d2dd3e0aec0cae1535a323d1c8fc9b94c6481d6  lib/site/docx-to-md-parser.js
 624c6dfe18e1ee7cca4dad7a7624d9b836f609fd56d4f74c59228ee3338fecd9  lib/site/md-to-pdf-parser.js
+5438779c59ae27e66d93dc6652acb5c55a8c73b36263ec59cad54496b0023ce9  lib/site/pdf-to-md-parser.js
 017a7bf681156d42a68ac914049e6702b6aa753f7555bdeb1e7ea1d11df5e410  lib/site/raw-output-guard.js
 f73f36ec0ace3e3a6ee0900a9f286309768ad83fa66aeaf798f8cfdea7415b6f  lib/site/raw-output-guard-worker.js
 70fe17bd06c7fa819f03a1ed10957904318103624198845dc893b309bf495e28  vendor/markdown-it-14.3.0.min.js
@@ -14,3 +15,5 @@ acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e  vendor/jszip-3
 466802584a61aa430c64f6914147ff8cc7fc4ae406de8c8f62fc50f71242a931  vendor/pdfmake-0.3.8.min.js
 1483ed267fe00ad90a3834441b019d856dd41ed079b2614404b2fcef425db6fc  vendor/pdfmake-0.3.8.vfs_fonts.js
 d7931d1cd7bf727dd756c871637edcc9e0f8538003b927368400ec1ee47a9dd9  vendor/marked-15.0.12.umd.js
+feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b  vendor/pdf.worker-3.11.174.min.js
+5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946  vendor/pdf-3.11.174.min.js

@@ -12,6 +12,7 @@ const KIND_BY_EXT = {
   '.txt': 'txt', '.text': 'txt',
   '.html': 'html', '.htm': 'html',
   '.docx': 'docx',
+  '.pdf': 'pdf',
 };
 const EXT_BY_KIND = { md: '.md', txt: '.txt', html: '.html', docx: '.docx', pdf: '.pdf' };
 const BINARY = new Set(['docx', 'pdf']);

@@ -24,6 +24,7 @@ const FILES = [
   ['html-to-md-parser.js', 'lib/site/html-to-md-parser.js'],
   ['docx-to-md-parser.js', 'lib/site/docx-to-md-parser.js'],
   ['md-to-pdf-parser.js', 'lib/site/md-to-pdf-parser.js'],
+  ['pdf-to-md-parser.js', 'lib/site/pdf-to-md-parser.js'],
   ['raw-output-guard.js', 'lib/site/raw-output-guard.js'],
   ['raw-output-guard-worker.js', 'lib/site/raw-output-guard-worker.js'],
   ['vendor/markdown-it/markdown-it-14.3.0.min.js', 'vendor/markdown-it-14.3.0.min.js'],
@@ -32,6 +33,15 @@ const FILES = [
   ['vendor/pdfmake-0.3.8.min.js', 'vendor/pdfmake-0.3.8.min.js'],
   ['vendor/pdfmake-0.3.8.vfs_fonts.js', 'vendor/pdfmake-0.3.8.vfs_fonts.js'],
   ['vendor/marked/marked-15.0.12.umd.js', 'vendor/marked-15.0.12.umd.js'],
+  ['vendor/pdf/pdf.worker-3.11.174.min.js', 'vendor/pdf.worker-3.11.174.min.js'],
+];
+
+// Files the site loads from a CDN with a pinned hash, so they are not in the
+// site checkout. They are kept here and must match the hash below.
+// [destination path here, SHA-256, where it came from]
+const PINNED = [
+  ['vendor/pdf-3.11.174.min.js', '5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946',
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'],
 ];
 
 // Words that must not appear in a synced converter file (vendor bundles are
@@ -67,8 +77,14 @@ function sync(site) {
     fs.writeFileSync(out, buf);
     lines.push(sha(buf) + '  ' + dest);
   }
+  for (const [dest, hash, from] of PINNED) {
+    const file = path.join(ROOT, dest);
+    const got = fs.existsSync(file) ? sha(fs.readFileSync(file)) : 'missing';
+    if (got !== hash) throw new Error(dest + ' does not match its pinned hash (source: ' + from + ')');
+    lines.push(hash + '  ' + dest);
+  }
   fs.writeFileSync(MANIFEST, lines.join('\n') + '\n');
-  console.log('synced ' + FILES.length + ' files');
+  console.log('synced ' + FILES.length + ' files, checked ' + PINNED.length + ' pinned');
   return 0;
 }
 

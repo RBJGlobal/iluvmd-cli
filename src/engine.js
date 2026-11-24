@@ -15,8 +15,8 @@ function loadCjs(rel) {
   return mod.exports;
 }
 
-function loadUmd(rel, globalName) {
-  const g = {};
+function loadUmd(rel, globalName, preset) {
+  const g = Object.assign({}, preset);
   const mod = { exports: {} };
   new Function('module', 'exports', 'window', 'self', 'globalThis', 'define', read(rel))
     .call(g, mod, mod.exports, g, g, g, undefined);
@@ -212,6 +212,30 @@ const routes = {
     }
     const bytes = new Uint8Array(input);
     return { text: await new win.DocxToMarkdownParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) };
+  },
+
+  // PDF to Markdown: the text layer only (no OCR). The PDF library runs in
+  // this thread, with code generation from the file's contents switched off
+  // and no font or resource loading.
+  'pdf>md': async (input) => {
+    const { win } = base();
+    // The library finds its parsing half on the object it is given, so no
+    // real global is defined and no worker file is ever loaded by address.
+    const pdfjsWorker = loadUmd('vendor/pdf.worker-3.11.174.min.js', 'pdfjsWorker');
+    const lib = loadUmd('vendor/pdf-3.11.174.min.js', 'pdfjsLib', { pdfjsWorker });
+    if (!lib || typeof lib.getDocument !== 'function') throw new Error('internal: the PDF reader could not start');
+    const pdfjsLib = {
+      GlobalWorkerOptions: {},
+      getDocument: (o) => lib.getDocument({
+        data: o.data, verbosity: 0, isEvalSupported: false, disableFontFace: true,
+        useWorkerFetch: false, useSystemFonts: false, disableAutoFetch: true, disableStream: true, disableRange: true,
+      }),
+    };
+    const scope = { pdfjsLib };
+    new Function('window', 'console', read('lib/site/pdf-to-md-parser.js'))(scope, quiet);
+    const bytes = new Uint8Array(input);
+    const text = await new scope.PdfToMdParser().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    return { text };
   },
 
   // Markdown to PDF, through the site converter's own entry point, which
